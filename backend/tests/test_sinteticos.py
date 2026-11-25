@@ -169,6 +169,61 @@ def test_parametros_degenerados_no_se_marcan_determinados():
     assert d["recomendacion"]["modelo"] == "SpringPot"
 
 
+@pytest.mark.parametrize("model,p", [
+    ("Zener", {"G_p": 8.0, "G_s": 11.0, "eta_s": 300.0}),
+    ("FractionalZenerSolidS", {"G_p": 8.0, "G_s": 11.0, "V": 10.0, "alpha": 0.4}),
+])
+def test_solidos_en_creep_recuperan_parametros(model, p):
+    t = np.logspace(-1, 3, 120)
+    res = _fit("creep", t, engine.model_eval("creep", model, p, t), model)
+    for k, v in p.items():
+        assert res["params"][k] == pytest.approx(v, rel=2e-3)
+    # el tiempo de retardo cae en la ventana y la complianza llega a la de equilibrio: la meseta sí se observa
+    assert res["largo_plazo"]["caracter"] == "sólido" and res["largo_plazo"]["respaldado"] is True
+
+
+def _tpu_like(rng):
+    # como el creep de TPU de FIME: Springpot casi elástico más un amortiguador que aporta ~1.6 % al final (no se observa flujo)
+    t = np.logspace(0, 3, 150)
+    y = engine.model_eval("creep", "FractionalMaxwellLiquid", {"G": 18.0, "eta_s": 6e5, "beta": 0.065}, t)
+    return t, y * (1 + 0.0005 * rng.standard_normal(len(t)))
+
+
+def test_equivalencia_practica_prefiere_el_modelo_simple():
+    # la critica del ingeniero: un creep con apariencia de sólido no debe describirse como líquido por una mejora de 0.3 %
+    t, y = _tpu_like(np.random.default_rng(3))
+    d = _fit_full("creep", t, y, ["SpringPot", "FractionalMaxwellLiquid", "Maxwell"], tolerancia="1")
+    R = d["recomendacion"]
+    assert R["modelo"] == "SpringPot" and R["regla"] == "equivalencia_practica"
+    assert R["menor_bic"] == "FractionalMaxwellLiquid"
+    fml = next(r for r in d["results"] if r["model"] == "FractionalMaxwellLiquid")
+    assert fml["largo_plazo"]["caracter"] == "líquido" and fml["largo_plazo"]["respaldado"] is False
+    assert fml["largo_plazo"]["fraccion_flujo"] < 0.05
+    sp = next(r for r in d["results"] if r["model"] == "SpringPot")
+    assert "tan δ" in sp["largo_plazo"]["interpretacion"]
+
+
+def test_incertidumbre_menor_recupera_el_modelo_fino():
+    # si el equipo resuelve 0.2 %, el Springpot (≈0.4 %) ya no basta y se recomienda el modelo con el término extra
+    t, y = _tpu_like(np.random.default_rng(3))
+    d = _fit_full("creep", t, y, ["SpringPot", "FractionalMaxwellLiquid"], tolerancia="0.2")
+    assert d["recomendacion"]["modelo"] == "FractionalMaxwellLiquid"
+
+
+def test_flujo_observado_cuando_tau_esta_en_la_ventana():
+    t = np.logspace(-1, 3, 120)
+    res = _fit("creep", t, engine.model_eval("creep", "Maxwell", {"G_s": 10.0, "eta_s": 500.0}, t), "Maxwell")
+    assert res["largo_plazo"]["respaldado"] is True   # tau = 50 s < 1000 s
+
+
+@pytest.mark.parametrize("tol", ["0", "-1", "abc", "80"])
+def test_incertidumbre_invalida(tol):
+    t = np.logspace(0, 2, 20)
+    r = client.post("/api/fit", files={"file": ("s.csv", _csv(t=t, y=t))},
+                    data={"test": "creep", "x_col": "t", "y_col": "y", "models": '["SpringPot"]', "tolerancia": tol})
+    assert r.status_code == 400
+
+
 def test_ponderacion_invalida():
     t = np.logspace(0, 2, 20)
     r = client.post("/api/fit", files={"file": ("s.csv", _csv(t=t, y=t))},
