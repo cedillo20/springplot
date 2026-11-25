@@ -66,6 +66,38 @@ def _specs():
         return np.column_stack([col]), lambda c: {"G": (1 / c[0]) * tau ** -(a - b), "V": 1 / c[0], "alpha": a, "beta": b}
     S["creep:FractionalKelvinVoigt"] = (["alpha:frac", "beta:frac<alpha", "logt:logt"], ckv)
 
+    def ckvs(t, p):  # KVF (resorte en paralelo con springpot): J = (1/E)[1 - E_a(-(t/tau)^a)] = t^a/V E_{a,1+a}(-(t/tau)^a)
+        a, tau = p["alpha"], 10 ** p["logt"]
+        col = t ** a * _ml(-(t / tau) ** a, a, 1 + a)
+        return np.column_stack([col]), lambda c: {"G_p": (1 / c[0]) * tau ** -a, "V": 1 / c[0], "alpha": a}
+    S["creep:FractionalKelvinVoigtS"] = (["alpha:frac", "logt:logt"], ckvs)
+
+    # Sólidos: J = a + b (1 - E_alpha(-(t/tau_r)^alpha)),  a = 1/(G_p + G_s),  a + b = 1/G_p (complianza de equilibrio),
+    # tau_r = tiempo de retardo = tau ((G_p + G_s)/G_p)^(1/alpha); tau = tiempo de relajación (Zener: alpha = 1, E_1 = exp).
+    def _solid_params(c, tau_r, a):
+        Gp = 1 / (c[0] + c[1])
+        Gs = 1 / c[0] - Gp
+        tau = tau_r * (Gp / (Gp + Gs)) ** (1 / a)
+        return Gp, Gs, tau
+
+    def czener(t, p):
+        tau_r = 10 ** p["logt"]
+
+        def to_params(c):
+            Gp, Gs, tau = _solid_params(c, tau_r, 1.0)
+            return {"G_p": Gp, "G_s": Gs, "eta_s": Gs * tau}
+        return np.column_stack([np.ones_like(t), 1 - np.exp(-t / tau_r)]), to_params
+    S["creep:Zener"] = (["logt:logt"], czener)
+
+    def cfzss(t, p):
+        a, tau_r = p["alpha"], 10 ** p["logt"]
+
+        def to_params(c):
+            Gp, Gs, tau = _solid_params(c, tau_r, a)
+            return {"G_p": Gp, "G_s": Gs, "V": Gs * tau ** a, "alpha": a}
+        return np.column_stack([np.ones_like(t), 1 - _ml(-(t / tau_r) ** a, a, 1)]), to_params
+    S["creep:FractionalZenerSolidS"] = (["alpha:frac", "logt:logt"], cfzss)
+
     # ---------------- relajación: G(t)
     S["relaxation:Maxwell"] = (["logt:logt"], lambda t, p: (
         np.column_stack([np.exp(-t / 10 ** p["logt"])]),
@@ -75,6 +107,9 @@ def _specs():
     S["relaxation:FractionalKelvinVoigt"] = (["alpha:frac", "beta:frac<alpha"], lambda t, p: (
         np.column_stack([t ** -p["alpha"] / gamma(1 - p["alpha"]), t ** -p["beta"] / gamma(1 - p["beta"])]),
         lambda c: {"G": c[1], "V": c[0], "alpha": p["alpha"], "beta": p["beta"]}))
+    S["relaxation:FractionalKelvinVoigtS"] = (["alpha:frac"], lambda t, p: (   # KVF: G = E + V t^-a / Gamma(1-a)
+        np.column_stack([np.ones_like(t), t ** -p["alpha"] / gamma(1 - p["alpha"])]),
+        lambda c: {"G_p": c[0], "V": c[1], "alpha": p["alpha"]}))
 
     def rfmg(t, p):  # G = G_s E_a(-(t/tau)^a),  V = G_s tau^a
         a, tau = p["alpha"], 10 ** p["logt"]
@@ -86,6 +121,9 @@ def _specs():
         return (np.column_stack([np.ones_like(t), _ml(-(t / tau) ** a, a, 1)]),
                 lambda c: {"G_p": c[0], "G_s": c[1], "V": c[1] * tau ** a, "alpha": a})
     S["relaxation:FractionalZenerSolidS"] = (["alpha:frac", "logt:logt"], rfzss)
+    S["relaxation:Zener"] = (["logt:logt"], lambda t, p: (
+        np.column_stack([np.ones_like(t), np.exp(-t / 10 ** p["logt"])]),
+        lambda c: {"G_p": c[0], "G_s": c[1], "eta_s": c[1] * 10 ** p["logt"]}))
 
     def rfmm(t, p):  # G = Gc (t/tau)^-b E_{a-b,1-b}(-(t/tau)^(a-b)),  Gc = V tau^-a,  G = V tau^-(a-b)
         a, b, tau = p["alpha"], p["beta"], 10 ** p["logt"]
@@ -224,7 +262,7 @@ def fit(test, model, x, y, w=None):
 
     if not kinds:
         loss, c, to_params = solve(np.array([]))
-        return (to_params(c), loss) if c is not None else None
+        return (to_params(c), loss, []) if c is not None else None
 
     # arranques deterministas en una rejilla; se refinan los 3 mejores con Nelder-Mead
     grids = []
@@ -240,6 +278,7 @@ def fit(test, model, x, y, w=None):
     starts = [np.array([_encode_start(k, v, logt_range) for k, v in combo]) for combo in itertools.product(*grids)]
     scored = sorted(((solve(u)[0], i) for i, u in enumerate(starts)), key=lambda z: z[0])
     best = None
+    finals = []   # a dónde llega cada uno de los 3 arranques (evidencia de mínimo global)
     opts = {"maxfev": 400 * len(kinds), "xatol": 1e-9, "fatol": 1e-16}
     for _, i in scored[:3]:
         r = minimize(lambda u: solve(u)[0], starts[i], method="Nelder-Mead", options=opts)
@@ -249,9 +288,12 @@ def fit(test, model, x, y, w=None):
             if r2.fun >= r.fun * (1 - 1e-9):
                 break
             r = r2
+        lf, cf, tpf = solve(r.x)
+        if cf is not None and np.isfinite(lf):
+            finals.append({"parametros": {k: float(v) for k, v in tpf(cf).items()}, "perdida": float(lf)})
         if best is None or r.fun < best.fun:
             best = r
     loss, c, to_params = solve(best.x)
     if c is None or not np.isfinite(loss):
         return None
-    return {k: float(v) for k, v in to_params(c).items()}, loss
+    return {k: float(v) for k, v in to_params(c).items()}, loss, finals
