@@ -47,7 +47,7 @@ label{display:block;font-weight:500;margin:12px 0 4px}
 select,input[type=file],input[type=number]{width:100%;padding:8px;border:1px solid var(--line);border-radius:4px;background:var(--bg);color:var(--ink);font:inherit}
 .drop{border:1.5px dashed var(--acc);border-radius:6px;padding:16px;text-align:center;color:var(--mute);cursor:pointer}
 .drop.on{background:color-mix(in srgb,var(--acc) 10%,transparent)}
-.models{display:grid;gap:2px}.models .recopt{padding:6px 8px;margin-bottom:4px;border:1px solid var(--acc);border-radius:4px;background:color-mix(in srgb,var(--acc) 8%,#fff)}.models label{font-weight:400;margin:0;display:flex;gap:8px;align-items:center}
+.models{display:grid;gap:2px}.models .recopt{padding:6px 8px;margin-bottom:4px;border:1px solid var(--acc);border-radius:4px;background:color-mix(in srgb,var(--acc) 8%,#fff)}.models label{font-weight:400;margin:0;display:flex;gap:8px;align-items:center}.models .mgrp{display:block;grid-column:1/-1;margin:8px 0 2px;color:var(--mute);font-weight:600}
 button{font:600 15px "Public Sans";padding:10px 16px;border-radius:4px;border:1px solid var(--acc);background:var(--acc);color:var(--bg);cursor:pointer}
 button:hover{filter:brightness(.92)}
 button.ghost{background:transparent;color:var(--acc)}
@@ -141,10 +141,15 @@ small{color:var(--mute)}
     <label id="mlab">Modelos</label>
     <div class="models" id="models"></div>
     <label id="trw" style="display:flex;gap:8px;font-weight:400;margin-top:12px" hidden><input type="checkbox" id="trim" checked> Usar solo la parte útil (quita la rampa de carga y reinicia el tiempo)</label>
+    <label id="sensw" style="display:flex;gap:8px;font-weight:400;margin-top:4px" hidden><input type="checkbox" id="sens" checked> Prueba de sensibilidad a la rampa: ajustar otra vez desde 10·t₁ y comparar (solo archivos FIME)</label>
     <div id="wmw"><label for="wmode">Ponderación del ajuste</label>
-      <select id="wmode"><option value="decada">Igual peso por década</option><option value="todos">Todas las observaciones (como pyRheo)</option></select>
+      <select id="wmode"><option value="decada">Igual peso por década</option><option value="todos">Todas las observaciones (como pyRheo)</option><option value="incertidumbre">Incertidumbre de cada intervalo (1/SE²)</option></select>
       <small>Los datos se promedian en intervalos logarítmicos. «Igual peso por década» da la misma importancia a cada escala de tiempo;
-      «Todas las observaciones» pesa cada intervalo según cuántos datos promedia (domina el tramo con más mediciones). Declara la opción en tu reporte.</small></div>
+      «Todas las observaciones» pesa cada intervalo según cuántos datos promedia (domina el tramo con más mediciones).
+      «Incertidumbre» pesa cada intervalo con 1/SE², el error estándar de su promedio (dispersión sin la tendencia de la curva); da el χ² reducido: ≈ 1 si el modelo reproduce los datos dentro del ruido. Declara la opción en tu reporte.</small></div>
+    <div id="tolw"><label for="tolpct">Incertidumbre de medición [%]</label><input type="number" id="tolpct" value="1" min="0.01" max="50" step="any">
+      <small>Error relativo que tu ensayo no puede resolver. Se recomienda el modelo más simple cuyo error RMS no la supera: una mejora menor no puede atribuirse al material.
+      1 % es el error admitido en la fuerza por ASTM E4; usa el de tu equipo (certificado de calibración) si lo conoces. Declárala en tu reporte.</small></div>
     <div id="secw" hidden><label for="secant">Deformación designada para módulo secante [%]</label><input type="number" id="secant" value="1" min="0.01" max="100" step="any">
       <small>Solo se usa si una probeta no tiene porción lineal (ASTM D638, 11.5). Debe reportarse junto con el módulo.</small>
       <div id="unw" class="g2" hidden>
@@ -256,13 +261,16 @@ const LEG = {orientation:"h", y:-0.24, bgcolor:"#f3f8f4", bordercolor:"#b9cfbf",
   title:{text:"<b>Clic</b> en un elemento para ocultarlo o mostrarlo · <b>doble clic</b> para ver solo ese", side:"top", font:{size:12, color:"#5d6b63"}}};
 
 // Nombres para mostrar (el valor interno que usa pyRheo no cambia)
-const LBL = {auto:"Automático (sugerido por pyRheo)", Maxwell:"Maxwell", SpringPot:"Springpot",
-  FractionalMaxwellGel:"Maxwell fraccionario (gel)", FractionalMaxwellLiquid:"Maxwell fraccionario (líquido)",
-  FractionalMaxwell:"Maxwell fraccionario", FractionalKelvinVoigt:"Kelvin-Voigt fraccionario",
-  FractionalZener:"Zener fraccionario", FractionalZenerSolidS:"Zener fraccionario (sólido S)",
+const LBL = {auto:"Automático (sugerido por pyRheo)", Maxwell:"Maxwell", SpringPot:"Springpot (Scott Blair)",
+  FractionalMaxwellGel:"FMM · Maxwell fraccionario", FractionalKelvinVoigtS:"KVF · Kelvin-Voigt fraccionario",
+  FractionalZenerSolidS:"ZFM · Zener fraccionario", Zener:"Zener",
+  FractionalMaxwellLiquid:"Maxwell fraccionario (amortiguador + springpot)",
+  FractionalMaxwell:"Maxwell fraccionario (2 springpots)", FractionalKelvinVoigt:"Kelvin-Voigt fraccionario (2 springpots)",
+  FractionalZener:"Zener fraccionario (3 springpots)",
   HerschelBulkley:"Herschel-Bulkley", Bingham:"Bingham", PowerLaw:"Ley de potencia",
   CarreauYasuda:"Carreau-Yasuda", Cross:"Cross", Casson:"Casson"};
 const pretty = m => LBL[m] || String(m).replace(/([a-z])([A-Z])/g, "$1 $2");
+const MAIN_FAMILY = ["SpringPot", "FractionalMaxwellGel", "FractionalKelvinVoigtS", "FractionalZenerSolidS"];
 let file = null, status = null, last = null, isFime = false, prevData = null;
 // «Ajuste de datos» y «Tensión» comparten el formulario; cada pestaña guarda su propio archivo, vista previa y resultados
 let mode = "fit";
@@ -288,8 +296,14 @@ function renderModels() {
   const recList = (status && status.recommend_models && status.recommend_models[t]) || [];
   const shown = list.filter(m => m !== "auto");
   $("models").innerHTML = (t === "tension" ? "" :
-    `<label class="recopt"><input type="checkbox" id="recall" checked> <b>★ Recomendado</b>: probar todos los modelos y elegir el más simple cuyos parámetros estén determinados</label>`) +
-    shown.map(m => `<label><input type="checkbox" class="mchk" value="${m}" ${recList.includes(m) ? "checked" : ""}> ${esc(pretty(m))}</label>`).join("");
+    `<label class="recopt"><input type="checkbox" id="recall" checked> <b>★ Recomendado</b>: probar todos los modelos y elegir el más simple que reproduce tus datos dentro de la incertidumbre de medición, con sus parámetros determinados</label>`) +
+    (() => {
+      const box = m => `<label><input type="checkbox" class="mchk" value="${m}" ${recList.includes(m) ? "checked" : ""}> ${esc(pretty(m))}</label>`;
+      const main = shown.filter(m => MAIN_FAMILY.includes(m)), rest = shown.filter(m => !MAIN_FAMILY.includes(m));
+      if (!(t === "creep" || t === "relaxation") || !main.length) return shown.map(box).join("");
+      return `<small class="mgrp">Familia de un solo orden α (resortes + springpot; notación E, τ, α)</small>` + main.map(box).join("") +
+        `<small class="mgrp">Clásicos y de dos springpots (prueba de robustez)</small>` + rest.map(box).join("");
+    })();
   if ($("recall")) {
     $("recall").onchange = () => document.querySelectorAll("#models .mchk").forEach(i => i.checked = $("recall").checked && recList.includes(i.value));
     document.querySelectorAll("#models .mchk").forEach(i => i.onchange = () => {
@@ -297,7 +311,7 @@ function renderModels() {
     });
   }
   $("xl").textContent = LABELS[t][0]; $("yl").textContent = LABELS[t][1];
-  $("y2w").hidden = t !== "saos"; $("trw").hidden = !(t === "relaxation" || t === "creep"); $("secw").hidden = t !== "tension"; $("wmw").hidden = t === "tension";
+  $("y2w").hidden = t !== "saos"; $("trw").hidden = !(t === "relaxation" || t === "creep"); $("sensw").hidden = $("trw").hidden; $("secw").hidden = t !== "tension"; $("wmw").hidden = t === "tension"; $("tolw").hidden = t === "tension";
   guessCols();
 }
 $("test").onchange = renderModels;
@@ -433,7 +447,7 @@ $("run").onclick = async () => {
   const fd = new FormData(), t = $("test").value;
   fd.append("file", file); fd.append("test", t); fd.append("x_col", $("xc").value);
   fd.append("y_col", $("yc").value); fd.append("y2_col", t === "saos" ? $("y2c").value : "");
-  fd.append("models", JSON.stringify(models)); fd.append("sheet", $("sheet").value); fd.append("sample", $("sample").value); fd.append("trim", $("trim").checked ? "1" : "0"); fd.append("weighting", $("wmode").value);
+  fd.append("models", JSON.stringify(models)); fd.append("sheet", $("sheet").value); fd.append("sample", $("sample").value); fd.append("trim", $("trim").checked ? "1" : "0"); fd.append("weighting", $("wmode").value); fd.append("tolerancia", $("tolpct").value || "1"); fd.append("sensitivity", $("sens").checked ? "1" : "0");
   $("run").disabled = true; $("run").textContent = "Ajustando…"; note("");
   try {
     const r = await fetch("/api/fit", {method:"POST", body:fd}), d = await r.json();
@@ -484,24 +498,76 @@ function show(d, scroll = true) {
   const T = r => r.todos || {};
   const order = [...d.results].sort((a, b) => (a.error ? 1 : 0) - (b.error ? 1 : 0) || (b.recomendado ? 1 : 0) - (a.recomendado ? 1 : 0) || (a.bic ?? Infinity) - (b.bic ?? Infinity));
   const R = d.recomendacion;
-  const recBox = R ? `<div class="msg info" style="margin:0 0 10px"><b>★ Modelo recomendado: ${esc(pretty(R.modelo))}</b> (${R.k} parámetros${R.con_parametros_determinados ? ", todos determinados por tus datos" : ""}).` +
-    (R.siguiente ? ` Le sigue ${esc(pretty(R.siguiente))} con ΔBIC = ${fmt(R.delta_bic_siguiente)}${R.delta_bic_siguiente > 10 ? " (diferencia muy fuerte)" : R.delta_bic_siguiente > 6 ? " (diferencia fuerte)" : R.delta_bic_siguiente > 2 ? " (diferencia positiva)" : " (diferencia débil: ambos son comparables)"}.` : "") +
-    (R.mejor_ajuste_sin_restriccion ? ` ${esc(pretty(R.mejor_ajuste_sin_restriccion))} tiene menor BIC, pero no todos sus parámetros están determinados por los datos.` : "") +
-    (!R.con_parametros_determinados ? " <b>Ningún modelo tiene todos sus parámetros determinados</b>: se recomienda el de menor BIC; interpreta sus parámetros con cautela." : "") +
+  const LT = r => r.largo_plazo || {};
+  const ltTag = r => { const l = LT(r); if (!l.caracter) return "";
+    const col = l.respaldado === true ? "var(--acc)" : l.respaldado === false ? "var(--acc2)" : "inherit";
+    const mark = l.respaldado === true ? " · respaldado por los datos" : l.respaldado === false ? " · NO observado en tus datos" : "";
+    return `<br><small style="color:${col}" title="${esc(l.descripcion || "")}">a largo plazo: ${esc(l.caracter)}${mark}</small>`; };
+  const rec = R ? order.find(r => r.recomendado) : null;
+  const recBox = R ? `<div class="msg info" style="margin:0 0 10px"><b>★ Mejor descripción dentro del rango medido: ${esc(pretty(R.modelo))}</b> (${R.k} parámetros${R.con_parametros_determinados ? ", todos determinados por tus datos" : ""}; RMS ${fmt(R.rms_pct)} %).` +
+    (R.regla === "equivalencia_practica"
+      ? ` Es el modelo más simple que reproduce tus datos dentro de la incertidumbre de medición (${fmt(R.tolerancia_pct)} %).` +
+        (R.equivalentes.length > 1 ? ` También la alcanzan: ${R.equivalentes.filter(m => m !== R.modelo).map(m => esc(pretty(m))).join(", ")}; sus diferencias con el recomendado son menores que lo que el ensayo puede resolver.` : "") +
+        (R.menor_bic ? ` ${esc(pretty(R.menor_bic))} tiene menor BIC (ajuste estadísticamente más fino), pero esa mejora es menor que la incertidumbre de medición y su término extra impone un comportamiento que debe verificarse (ver «a largo plazo»).` : "")
+      : ` Ningún modelo reproduce tus datos dentro de la incertidumbre de medición (${fmt(R.tolerancia_pct)} %): se recomienda el de menor BIC.` +
+        (R.siguiente ? ` Le sigue ${esc(pretty(R.siguiente))} con ΔBIC = ${fmt(R.delta_bic_siguiente)}${R.delta_bic_siguiente > 10 ? " (diferencia muy fuerte)" : R.delta_bic_siguiente > 6 ? " (diferencia fuerte)" : R.delta_bic_siguiente > 2 ? " (diferencia positiva)" : " (diferencia débil: ambos son comparables)"}.` : "")) +
+    (R.mejor_ajuste_sin_restriccion ? ` ${esc(pretty(R.mejor_ajuste_sin_restriccion))} tiene el menor BIC de todos, pero no todos sus parámetros están determinados por los datos.` : "") +
+    (!R.con_parametros_determinados ? " <b>Ningún modelo tiene todos sus parámetros determinados</b>: interpreta sus parámetros con cautela." : "") +
+    (rec && LT(rec).interpretacion ? `<br>${esc(LT(rec).interpretacion)}` : "") +
+    `<br><b>Alcance:</b> describe tus datos en la ventana medida; no clasifica al material como sólido o líquido. ` +
+    `Lo que ocurre fuera de la ventana solo puede afirmarse si los datos lo muestran (ver «a largo plazo» en cada modelo).` +
     `<br><small>Criterio: ${esc(R.criterio)}. Solo se comparan los modelos que marcaste.</small></div>` : "";
-  $("metrics").innerHTML = recBox + `<table><tr><th>Modelo</th><th title="Diferencia de BIC respecto al recomendado; valores mayores = menos respaldo">ΔBIC</th><th>R²</th><th>R² log</th><th>RSS<sub>w</sub></th>` +
-    `<th title="Error relativo cuadrático medio sobre todas las observaciones válidas">RMS [%]</th><th title="Percentil 95 del error relativo absoluto sobre todas las observaciones válidas">P95 [%]</th></tr>` +
+  const chi = d.results.some(r => r.chi2_red != null);
+  const mseU = d.modo === "tension" ? (d.test === "creep" ? " [MPa⁻²]" : d.test === "relaxation" ? " [MPa²]" : "") : "";
+  const warnDef = d.aviso_deformacion ? `<div class="msg err" style="margin:0 0 10px">⚠ ${esc(d.aviso_deformacion)}</div>` : "";
+  $("metrics").innerHTML = warnDef + recBox + `<div class="scroll"><table><tr><th>Modelo</th>` +
+    `<th title="AICc - mínimo AICc. AICc = n ln(RSS_w/n) + 2k + 2k(k+1)/(n-k-1), con n = intervalos ajustados">ΔAICc</th>` +
+    `<th title="Peso de Akaike: probabilidad relativa de que sea el mejor modelo del conjunto, w ∝ exp(-ΔAICc/2)">w<sub>Akaike</sub></th>` +
+    `<th title="BIC - BIC del recomendado. BIC = n ln(RSS_w/n) + k ln n">ΔBIC</th>` +
+    `<th title="R² = 1 - Σ(y - ŷ)² / Σ(y - ȳ)², sobre todas las observaciones (métrica del doctor)">R²</th>` +
+    `<th title="AAD = (1/N) Σ |(y - ŷ)/y| × 100, sobre todas las observaciones (métrica del doctor)">AAD [%]</th>` +
+    `<th title="MSE = (1/N) Σ (y - ŷ)², sobre todas las observaciones; tiene unidades: no compares creep con relajación">MSE${mseU}</th>` +
+    `<th title="Error relativo cuadrático medio sobre todas las observaciones (base de la recomendación)">RMS [%]</th>` +
+    `<th title="Desviación estándar residual relativa = √(RSS_w/(n - k)) × 100">s<sub>res</sub> [%]</th>` +
+    `<th title="Autocorrelación de lag 1 de los residuos: ≈ 0 ruido; cerca de 1, tendencia que el modelo no captura">ρ<sub>1</sub></th>` +
+    (chi ? `<th title="χ² reducido = Σ((y-ŷ)/y / SE_rel)² / (n-k), con pesos 1/SE². ≈ 1: el modelo reproduce los datos dentro del ruido; ≫ 1: desviación sistemática (o ruido correlacionado)">χ²<sub>red</sub></th>` : "") + `</tr>` +
     order.map(r => r.error
-    ? `<tr><td>${esc(pretty(r.requested))}</td><td colspan="6">${esc(r.error)}${r.intentos > 1 ? ` <small>(${r.intentos} intentos)</small>` : ""}</td></tr>`
-    : `<tr><td>${esc(pretty(r.model))}${r.requested === "auto" ? " <small>(auto)</small>" : ""}${r.semilla !== undefined ? `<br><small>semilla ${r.semilla}${r.intentos > 1 ? ` · ${r.intentos} intentos` : ""}</small>` : ""}${r.recomendado ? `<br><small style="color:var(--acc);font-weight:700">★ recomendado</small>` : ""}${r.todos_determinados === false ? `<br><small style="color:var(--acc2)">⚠ parámetros no determinados</small>` : ""}</td>` +
-      `<td>${r.delta_bic === undefined ? "—" : fmt(r.delta_bic)}</td><td>${r2f(r.r2)}</td><td>${r2f(r.r2_log)}</td><td>${fmt(r.rss_w)}</td><td>${fmt(T(r).rms_pct)}</td><td>${fmt(T(r).p95_pct)}</td></tr>`).join("") + `</table>`;
+    ? `<tr><td>${esc(pretty(r.requested))}</td><td colspan="${chi ? 10 : 9}">${esc(r.error)}${r.intentos > 1 ? ` <small>(${r.intentos} intentos)</small>` : ""}</td></tr>`
+    : `<tr><td>${esc(pretty(r.model))}${r.requested === "auto" ? " <small>(auto)</small>" : ""}${r.semilla !== undefined ? `<br><small>semilla ${r.semilla}${r.intentos > 1 ? ` · ${r.intentos} intentos` : ""}</small>` : ""}${r.recomendado ? `<br><small style="color:var(--acc);font-weight:700">★ recomendado</small>` : ""}${r.todos_determinados === false ? `<br><small style="color:var(--acc2)">⚠ parámetros no determinados</small>` : ""}${ltTag(r)}</td>` +
+      `<td>${r.delta_aicc === undefined ? "—" : fmt(r.delta_aicc)}</td><td>${r.peso_akaike === undefined ? "—" : r.peso_akaike.toFixed(3)}</td>` +
+      `<td>${r.delta_bic === undefined ? "—" : fmt(r.delta_bic)}</td><td>${r2f(T(r).r2 ?? r.r2)}</td><td>${fmt(T(r).aad_pct)}</td><td>${fmt(T(r).mse)}</td>` +
+      `<td>${fmt(T(r).rms_pct)}</td><td>${fmt(r.s_res_pct)}</td><td style="${r.autocorrelacion_lag1 > 0.5 ? "color:var(--acc2)" : ""}">${r.autocorrelacion_lag1 == null ? "—" : r.autocorrelacion_lag1.toFixed(2)}</td>${chi ? `<td>${fmt(r.chi2_red)}</td>` : ""}</tr>`).join("") +
+    `</table></div><small>Compara AICc/BIC solo entre modelos ajustados con los mismos datos, ventana y pesos. R², AAD y MSE se calculan sobre todas las observaciones (no sobre los promedios) para compararlos con los del doctor. ` +
+    `ρ<sub>1</sub> &gt; 0.5 (en naranja): los residuos tienen tendencia; el error es sistemático, no ruido, y los IC reales son más amplios. Elige por AICc/BIC, residuos y parámetros determinados, no por R².</small>`;
+  $("metrics").innerHTML += sensBlock(d);
   renderParams(d, ok);
   $("res").hidden = false; if (scroll) $("res").scrollIntoView({behavior:"smooth", block:"start"});
 }
 
+// ---------- Prueba de sensibilidad a la rampa (ajuste desde 10·t1) ----------
+function sensBlock(d) {
+  const S = d.sensibilidad_rampa; if (!S) return "";
+  const head = `<b>Prueba de sensibilidad a la rampa</b> (t₁ = ${fmt(S.t1_s)} s; segundo ajuste desde 10·t₁ = ${fmt(S.t_corte_s)} s)`;
+  if (!S.realizado) return `<div class="msg info" style="margin-top:10px">${head}: ${esc(S.motivo)}</div>`;
+  const sym = k => PSYM[k] ? PSYM[k][0] : esc(k);
+  const blocks = Object.entries(S.modelos).map(([m, v]) => {
+    const rows = Object.entries(v.parametros).map(([k, r]) => `<tr><td>${sym(k)}</td><td>${fmt(r.principal)}` +
+      (r.ic_principal[0] != null && r.ic_principal[1] != null ? `<br><small>IC: ${fmt(r.ic_principal[0])} – ${fmt(r.ic_principal[1])}</small>` : "") +
+      `</td><td>${fmt(r.desde_10t1)}</td><td>${r.cambio_pct == null ? "—" : (r.cambio_pct > 0 ? "+" : "") + r.cambio_pct.toFixed(1) + " %"}</td>` +
+      `<td>${r.dentro_ic_principal === undefined ? "—" : r.dentro_ic_principal ? "sí" : "no"}</td>` +
+      `<td style="color:${r.consistente === true ? "var(--acc)" : r.consistente === false ? "var(--acc2)" : "var(--mute)"}">${r.consistente === true ? `✓ ruido (z = ${r.z.toFixed(1)})` : r.consistente === false ? `✗ significativo (z = ${r.z.toFixed(1)})` : "no comparable"}</td></tr>`).join("");
+    return `<details style="margin-top:6px"${v.consistente === false ? " open" : ""}><summary>${v.consistente === true ? "✓" : v.consistente === false ? "⚠" : "—"} ${esc(pretty(m))}</summary>` +
+      `<div class="scroll"><table><tr><th>Parámetro</th><th>Ajuste principal</th><th>Desde 10·t₁</th><th>Cambio</th><th title="Informativo: el valor desde 10·t₁ cae dentro del IC 95 % del ajuste principal">¿En IC principal?</th><th title="z = |diferencia| / √(SE_principal² + SE₁₀ₜ₁²); significativo si z > 1.96">¿Diferencia mayor que el ruido?</th></tr>${rows}</table></div>` +
+      `<small>${esc(v.conclusion)}</small></details>`;
+  }).join("");
+  return `<div class="msg info" style="margin-top:10px">${head}: ${S.observaciones} observaciones entre ${fmt(S.ventana_s[0])} y ${fmt(S.ventana_s[1])} s. ` +
+    `Criterio: ${esc(S.criterio)}.${blocks}</div>`;
+}
+
 // ---------- Tabla de parámetros: una tarjeta por modelo, con el color de su curva ----------
 // Símbolos (HTML y LaTeX) de los nombres de parámetros de pyRheo
-const PSYM = {G_s:["G<sub>s</sub>","G_{s}"], G_p:["G<sub>p</sub>","G_{p}"], eta_s:["η<sub>s</sub>","\\eta_{s}"], eta_p:["η<sub>p</sub>","\\eta_{p}"],
+const PSYM = {E:["E","E"], E_r:["E<sub>r</sub>","E_{r}"], E_u:["E<sub>u</sub>","E_{u}"], tau:["τ","\\tau"], tau_sigma:["τ<sub>σ</sub>","\\tau_{\\sigma}"],
+  tau_epsilon:["τ<sub>ε</sub>","\\tau_{\\varepsilon}"], G_s:["G<sub>s</sub>","G_{s}"], G_p:["G<sub>p</sub>","G_{p}"], eta_s:["η<sub>s</sub>","\\eta_{s}"], eta_p:["η<sub>p</sub>","\\eta_{p}"],
   alpha:["α","\\alpha"], beta:["β","\\beta"], kappa:["κ","\\kappa"], V:["V","V"], G:["G","G"], K:["K","K"],
   sigma_y:["σ<sub>y</sub>","\\sigma_{y}"], k:["k","k"], n:["n","n"], eta_inf:["η<sub>∞</sub>","\\eta_{\\infty}"], eta_zero:["η<sub>0</sub>","\\eta_{0}"], a:["a","a"]};
 // En negritas: órdenes fraccionarios y propiedades con significado físico directo (módulos, viscosidades, cedencia, índice de flujo)
@@ -531,6 +597,9 @@ const EQ = {
   "creep:FractionalMaxwell": String.raw`\frac{t^{«alpha»}}{«V»\,\Gamma(«1+alpha»)}+\frac{t^{«beta»}}{«G»\,\Gamma(«1+beta»)}`,
   "creep:FractionalKelvinVoigt": String.raw`\frac{t^{«alpha»}}{«V»}\,E_{«alpha-beta»,\,«1+alpha»}\!\left(-\frac{«G»}{«V»}\,t^{«alpha-beta»}\right)`,
   "creep:FractionalZener": String.raw`\mathcal{L}^{-1}\!\left\{\frac{1}{s}\,\frac{«V»s^{«alpha»}+«G»s^{«beta»}}{«V»«G»\,s^{«alpha+beta»}+«K»s^{«kappa»}\left(«V»s^{«alpha»}+«G»s^{«beta»}\right)}\right\}`,
+  "creep:Zener": String.raw`\frac{1}{«G_p»}-\frac{«G_s»}{«G_p»\left(«G_p»+«G_s»\right)}\exp\!\left(-\frac{t}{\tau_{r}}\right)`,
+  "creep:FractionalZenerSolidS": String.raw`\frac{1}{«G_p»}-\frac{«G_s»}{«G_p»\left(«G_p»+«G_s»\right)}\,E_{«alpha»}\!\left(-\left(\frac{t}{\tau_{r}}\right)^{«alpha»}\right)`,
+  "relaxation:Zener": String.raw`«G_p»+«G_s»\,\exp\!\left(-\frac{«G_s»}{«eta_s»}\,t\right)`,
   "relaxation:Maxwell": String.raw`«G_s»\,\exp\!\left(-\frac{«G_s»}{«eta_s»}\,t\right)`,
   "relaxation:SpringPot": String.raw`\frac{«V»\,t^{-«alpha»}}{\Gamma(«1-alpha»)}`,
   "relaxation:FractionalMaxwellGel": String.raw`«G_s»\,E_{«alpha»}\!\left(-\frac{«G_s»}{«V»}\,t^{«alpha»}\right)`,
@@ -573,8 +642,66 @@ function fillEq(tpl, P, numeric) {
   });
 }
 const katexOk = () => typeof katex !== "undefined";
+// Ecuaciones en tensión con la notación del doctor (springpot σ = E τ^α D^α ε; Mainardi y Spada 2011)
+const DOC_EQ = {
+  "creep:SpringPot": String.raw`\frac{t^{«alpha»}}{«V»\,\Gamma(«1+alpha»)}`,
+  "creep:FractionalMaxwellGel": String.raw`\frac{1}{«E»}\left[1+\frac{(t/«tau»)^{«alpha»}}{\Gamma(«1+alpha»)}\right]`,
+  "creep:FractionalKelvinVoigtS": String.raw`\frac{1}{«E»}\left\{1-E_{«alpha»}\!\left[-\left(t/«tau»\right)^{«alpha»}\right]\right\}`,
+  "creep:FractionalZenerSolidS": String.raw`\frac{1}{«E_u»}+\left(\frac{1}{«E_r»}-\frac{1}{«E_u»}\right)\left\{1-E_{«alpha»}\!\left[-\left(t/«tau_epsilon»\right)^{«alpha»}\right]\right\}`,
+  "creep:Maxwell": String.raw`\frac{1}{«E»}\left(1+\frac{t}{«tau»}\right)`,
+  "creep:Zener": String.raw`\frac{1}{«E_u»}+\left(\frac{1}{«E_r»}-\frac{1}{«E_u»}\right)\left[1-\exp\left(-t/«tau_epsilon»\right)\right]`,
+  "relaxation:SpringPot": String.raw`\frac{«V»\,t^{-«alpha»}}{\Gamma(«1-alpha»)}`,
+  "relaxation:FractionalMaxwellGel": String.raw`«E»\,E_{«alpha»}\!\left[-\left(t/«tau»\right)^{«alpha»}\right]`,
+  "relaxation:FractionalKelvinVoigtS": String.raw`«E»\left[1+\frac{(t/«tau»)^{-«alpha»}}{\Gamma(«1-alpha»)}\right]`,
+  "relaxation:FractionalZenerSolidS": String.raw`«E_r»+\left(«E_u»-«E_r»\right)E_{«alpha»}\!\left[-\left(t/«tau_sigma»\right)^{«alpha»}\right]`,
+  "relaxation:Maxwell": String.raw`«E»\exp\left(-t/«tau»\right)`,
+  "relaxation:Zener": String.raw`«E_r»+\left(«E_u»-«E_r»\right)\exp\left(-t/«tau_sigma»\right)`,
+};
+function docDesc(model, k) {
+  if (k === "E") return model === "FractionalMaxwellGel" ? "módulo del resorte = módulo instantáneo, E(0⁺)" :
+    model === "FractionalKelvinVoigtS" ? "módulo del resorte = módulo de equilibrio, E(∞) = 1/D(∞)" : "módulo del resorte";
+  return {E_r:"módulo relajado (de equilibrio), E(∞) = 1/D(∞)", E_u:"módulo no relajado (instantáneo), E(0⁺) = 1/D(0)",
+    tau:"tiempo característico; el springpot vale E·τ^α", tau_sigma:"tiempo de relajación", tau_epsilon:"tiempo de retardo (el que se observa en creep)",
+    alpha:"orden fraccionario (0 = resorte, 1 = amortiguador)", V:"cuasi-propiedad del springpot (E·τ^α)"}[k] || "";
+}
+const docUnit = k => ({E:"MPa", E_r:"MPa", E_u:"MPa", tau:"s", tau_sigma:"s", tau_epsilon:"s", alpha:"—", V:"MPa·s<sup>α</sup>"}[k] || "");
+// Bloque de parámetros en notación del doctor: valor ± error estándar, IC 95 %, derivados y correlaciones
+function docBlock(d, r, lhs, tens) {
+  const D = r.doctor; if (!D) return "";
+  const prim = D.parametros, der = D.derivados || {}, vals = {};
+  Object.entries(prim).forEach(([k, u]) => vals[k] = u.valor);
+  const allDet = Object.values(prim).every(u => u.determinado);
+  const tpl = DOC_EQ[`${d.test}:${r.model}`];
+  const eq = tpl ? `<div class="eq"><span class="lbl">Ecuación (notación del doctor, en tensión)</span>${tex(`${lhs}=${fillEq(tpl, vals, false)}`)}</div>` +
+    (allDet ? `<div class="eq"><span class="lbl">Con los parámetros ajustados</span>${tex(`${lhs}=${fillEq(tpl, vals, true)}`)}</div>`
+            : `<div class="eq"><small>No se muestra la ecuación con valores: algunos parámetros no están determinados por tus datos.</small></div>`) : "";
+  const row = (k, u, derived) => {
+    const sym = PSYM[k] ? PSYM[k][0] : esc(k);
+    const se = u.error_estandar != null ? ` ± ${fmt(u.error_estandar)}` : "";
+    const ci = u.inf != null && u.sup != null ? `<br><small>IC 95 %: ${fmt(u.inf)} – ${fmt(u.sup)}</small>` : "";
+    const val = u.determinado ? `${fmt(u.valor)}${se}${ci}` : `<i style="color:var(--acc2)">no determinado</i><br><small>(${fmt(u.valor)}, solo una cota)</small>`;
+    return `<tr class="${u.determinado && !derived ? "imp" : derived ? "der" : ""}"><td>${sym}</td><td>${val}</td>${tens ? `<td>${docUnit(k)}</td>` : ""}` +
+      `<td>${esc(docDesc(r.model, k))}${derived ? " (derivado; IC por el método delta)" : ""}</td></tr>`;
+  };
+  const C = D.correlacion;
+  let corr = "";
+  if (C && C.parametros.length > 1) {
+    const hi = C.altas.map(([a, b, v]) => `ρ(${PSYM[a] ? PSYM[a][0] : a}, ${PSYM[b] ? PSYM[b][0] : b}) = ${v.toFixed(3)}`).join(", ");
+    const mat = `<table class="corr"><tr><th></th>${C.parametros.map(n => `<th>${PSYM[n] ? PSYM[n][0] : n}</th>`).join("")}</tr>` +
+      C.matriz.map((rw, i) => `<tr><th>${PSYM[C.parametros[i]] ? PSYM[C.parametros[i]][0] : C.parametros[i]}</th>${rw.map((v, j) =>
+        `<td style="${v !== null && i !== j && Math.abs(v) > 0.95 ? "color:var(--acc2);font-weight:600" : ""}">${v === null ? "—" : v.toFixed(3)}</td>`).join("")}</tr>`).join("") + `</table>`;
+    corr = `<details style="margin-top:6px"><summary><small>Matriz de correlación de parámetros${hi ? ` — <span style="color:var(--acc2)">|ρ| &gt; 0.95: ${hi}</span>` : " — sin correlaciones altas"}</small></summary>` +
+      `${mat}<small>|ρ| &gt; 0.95: esos parámetros se compensan entre sí (los datos fijan mejor una combinación de ellos que cada uno por separado). ` +
+      `Sus IC individuales ya incluyen ese efecto, pero no deben interpretarse de forma independiente.</small></details>`;
+  }
+  const A = r.arranques;
+  const starts = A ? `<small>${A.coinciden ? "✓" : "⚠"} Los ${A.n} arranques de la búsqueda ${A.coinciden ? "llegan al mismo mínimo (dentro del IC)" : "llegan a mínimos distintos: el resultado puede no ser el mínimo global"}.</small>` : "";
+  return eq + `<div class="scroll"><table><tr><th>Parámetro</th><th>Valor ± error estándar</th>${tens ? "<th>Unidades</th>" : ""}<th>Significado</th></tr>` +
+    Object.entries(prim).map(([k, u]) => row(k, u, false)).join("") + Object.entries(der).map(([k, u]) => row(k, u, true)).join("") + `</table></div>` + corr + starts;
+}
 const tex = (src, display = true) => katexOk() ? katex.renderToString(src, {throwOnError:false, displayMode:display}) : `<code>${esc(src)}</code>`;
 function renderParams(d, ok) {
+  const LT = r => r.largo_plazo || {};
   const tens = d.modo === "tension";
   const lhs = {creep:tens ? "D(t)" : "J(t)", relaxation:tens ? "E(t)" : "G(t)", saos:tens ? "E^{*}(\\omega)" : "G^{*}(\\omega)", steady:"\\eta(\\dot\\gamma)"}[d.test] || "y";
   const color = new Map(ok.map((r, k) => [r, COLORS[k % COLORS.length]]));  // mismo color que su curva
@@ -596,12 +723,20 @@ function renderParams(d, ok) {
     if (TAU[r.model] && d.test !== "steady" && allDet) {
       const tv = evalExpr(TAU[r.model], P);
       der = `<tr class="der"><td>τ</td><td>${fmt(tv)}</td>${tens ? "<td>s</td>" : ""}<td>tiempo característico (derivado): ${tex(TAU_TEX[r.model], false)}</td></tr>`;
+      if (d.test === "creep" && (r.model === "Zener" || r.model === "FractionalZenerSolidS")) {
+        const a = r.model === "Zener" ? 1 : P.alpha, tr = tv * Math.pow((P.G_p + P.G_s) / P.G_p, 1 / a);
+        der += `<tr class="der"><td>τ<sub>r</sub></td><td>${fmt(tr)}</td>${tens ? "<td>s</td>" : ""}<td>tiempo de retardo (el que se observa en creep): ${tex(String.raw`\tau_{r}=\tau\left(\frac{G_{p}+G_{s}}{G_{p}}\right)^{1/\alpha}`, false)}</td></tr>`;
+      }
     }
-    const ml = d.test.match(/creep|relaxation/) && /E_\{/.test(tpl || "") ? "<br><small>E<sub>a,b</sub>(z): función de Mittag-Leffler, evaluada con el método exacto de Garrappa.</small>" : "";
+    const doc = docBlock(d, r, lhs, tens);
+    const ml = d.test.match(/creep|relaxation/) && (/E_\{/.test(tpl || "") || /E_\{/.test(DOC_EQ[key] || "")) ? "<br><small>E<sub>α</sub>(z): función de Mittag-Leffler, evaluada con el método exacto de Garrappa.</small>" : "";
+    const nativeTbl = `<div class="scroll"><table><tr><th>Parámetro</th><th>Valor</th>${tens ? "<th>Unidades</th>" : ""}<th>Significado</th></tr>${rows}${der}</table></div>`;
     return `<div class="pcard" style="--c:${color.get(r)}"><h3><span style="color:var(--c)">●</span>${esc(pretty(r.model))}${r.recomendado ? ` <span style="color:var(--acc)">★ recomendado</span>` : ""}` +
-      `<small>R² log ${r2f(r.r2_log)} · RSS<sub>w</sub> ${fmt(r.rss_w)}${r.todos ? ` · RMS ${fmt(r.todos.rms_pct)} %` : ""}</small></h3>` +
-      ((r.avisos || []).length ? `<div class="msg err" style="margin:6px 0">${r.avisos.map(a => "⚠ " + esc(a)).join("<br>")}</div>` : "") + `${eq}` +
-      `<div class="scroll"><table><tr><th>Parámetro</th><th>Valor</th>${tens ? "<th>Unidades</th>" : ""}<th>Significado</th></tr>${rows}${der}</table></div>${ml}</div>`;
+      `<small>${r.todos && r.todos.r2 != null ? `R² ${r2f(r.todos.r2)} · AAD ${fmt(r.todos.aad_pct)} % · ` : `R² log ${r2f(r.r2_log)} · `}s<sub>res</sub> ${fmt(r.s_res_pct)} %${r.autocorrelacion_lag1 != null ? ` · ρ<sub>1</sub> ${r.autocorrelacion_lag1.toFixed(2)}` : ""}${r.peso_akaike !== undefined ? ` · w<sub>Akaike</sub> ${r.peso_akaike.toFixed(3)}` : ""}</small></h3>` +
+      ((r.avisos || []).length ? `<div class="msg err" style="margin:6px 0">${r.avisos.map(a => "⚠ " + esc(a)).join("<br>")}</div>` : "") +
+      (LT(r).caracter ? `<div class="msg ${LT(r).respaldado === false ? "err" : "info"}" style="margin:6px 0"><b>A largo plazo el modelo supone: ${esc(LT(r).caracter)}</b> — ${esc(LT(r).descripcion)}.<br>${esc(LT(r).explicacion || "")}${LT(r).interpretacion ? "<br>" + esc(LT(r).interpretacion) : ""}</div>` : "") +
+      (doc ? doc + `<details style="margin-top:8px"><summary><small>Parámetros internos de pyRheo (${Object.keys(P).join(", ")})</small></summary>${nativeTbl}</details>`
+           : `${eq}${nativeTbl}`) + `${ml}</div>`;
   }).join("");
   $("params").innerHTML = `<div class="pcards">${cards}</div><small>IC 95 %: intervalo de confianza aproximado (linealización del ajuste); supone que el modelo reproduce la forma de los datos, así que si los residuos muestran tendencia el intervalo real es más amplio. ` +
     `«No determinado»: el intervalo abarca más de un factor 2 (módulos y viscosidades) o más de ±0.1 (órdenes), o el parámetro quedó en un límite. ` +
@@ -677,13 +812,15 @@ function fitJson(d) {
       probetas:d.tensile.map(s => { const {strain, stress, deformacion, esfuerzo, E, sigma_max, eps_break, ...rest} = s; return {...rest, curva:{deformacion, esfuerzo}}; }),
       errores:k.errors || []};
   }
-  else o = {...base, configuracion:d.settings || null, ejes:d.axes || AXES[d.test], puntos_ajustados:d.n, puntos_validos:d.n_raw, nota:d.note || "",
-    ponderacion:d.weighting || null, recomendacion:d.recomendacion || null, datos:{x:d.x, y:d.ys, observaciones_por_intervalo:d.counts || null},
+  else o = {...base, preprocesamiento:d.preprocesamiento || null, sensibilidad_rampa:d.sensibilidad_rampa || null, configuracion:d.settings || null, ejes:d.axes || AXES[d.test], puntos_ajustados:d.n, puntos_validos:d.n_raw, nota:d.note || "",
+    ponderacion:d.weighting || null, recomendacion:d.recomendacion || null, aviso_deformacion:d.aviso_deformacion || null, datos:{x:d.x, y:d.ys, observaciones_por_intervalo:d.counts || null},
     resultados:d.results.map(r => r.error ? {modelo_solicitado:r.requested, error:r.error}
       : {modelo_solicitado:r.requested, modelo:r.model, parametros:r.params, r2:r.r2, r2_log:r.r2_log, rss_w:r.rss_w, curva:{x:r.curve_x, y:r.curve_y},
          residuos_pct:{definicion:"(dato - modelo) / dato x 100, en cada x de datos", valores:r.resid || null},
          semilla:r.semilla ?? null, intentos:r.intentos ?? null, semillas_probadas:r.semillas_probadas || null,
-         metricas_todas_las_observaciones:r.todos || null, avisos:r.avisos || [], incertidumbre_IC95:r.incertidumbre || null,
+         metricas_todas_las_observaciones:r.todos || null, avisos:r.avisos || [], incertidumbre_IC95:r.incertidumbre || null, largo_plazo:r.largo_plazo || null, dentro_de_incertidumbre:r.equivalente ?? null,
+         parametros_notacion_doctor:r.doctor || null, estadisticos:{aicc:r.aicc ?? null, delta_aicc:r.delta_aicc ?? null, peso_akaike:r.peso_akaike ?? null,
+           bic:r.bic ?? null, s_res_pct:r.s_res_pct ?? null, chi2_reducido:r.chi2_red ?? null, autocorrelacion_lag1:r.autocorrelacion_lag1 ?? null}, arranques:r.arranques || null,
          todos_los_parametros_determinados:r.todos_determinados ?? null, k:r.k ?? null, BIC:r.bic ?? null, delta_BIC:r.delta_bic ?? null, recomendado:!!r.recomendado, metodo_que_gano:r.inicio || null, mittag_leffler:r.mittag_leffler || null})};
   // con sangría, pero cada lista de números en una sola línea
   return JSON.stringify(o, null, 2).replace(/\[[\s\d.eE+,\-]*?\]/g, m => m.replace(/\s+/g, " ").replace("[ ", "[").replace(" ]", "]")).replace(/null,\s+(?=[\d\-n])/g, "null, ");
@@ -736,6 +873,7 @@ function pyCode(d) {
     L.push("]", "", "# Opcional: recalcular las curvas con pyRheo a partir de los parámetros (por ejemplo, en otro rango de x).",
       "# Necesita: pip install git+https://github.com/mirandi1/pyRheo.git", "RECALCULAR_CON_PYRHEO = False", "if RECALCULAR_CON_PYRHEO:",
       `    from pyRheo.${mod} import MODEL_FUNCS, MODEL_PARAMS`, "    xx = np.logspace(np.log10(x.min()), np.log10(x.max()), 200)", "    for a in ajustes:",
+      ...(d.test === "creep" ? [`        if a["modelo"] == "FractionalZenerSolidS":`, "            continue  # pyRheo 1.0.3 calcula este creep con el tiempo de relajación; se conserva la curva de SpringPlot"] : []),
       `        yy = np.asarray(MODEL_FUNCS[a["modelo"]](*[a["parametros"][k] for k in MODEL_PARAMS[a["modelo"]]], xx))`, `        a["x"] = xx`,
       saos ? `        a["y1"], a["y2"] = yy[:len(xx)], yy[len(xx):]` : `        a["y"] = yy`, "",
       "# Gráfica principal arriba y residuos relativos abajo, con el mismo eje x",
@@ -770,8 +908,8 @@ function tab(which) {
 function saveMode() {
   ST[mode] = {file, prev:prevData, last, msg:$("msg").innerHTML,
     sel:{sheet:$("sheet").value, sample:$("sample").value, test:$("test").value, xc:$("xc").value, yc:$("yc").value, y2c:$("y2c").value,
-      models:[...document.querySelectorAll("#models .mchk:checked")].map(i => i.value), rec:!!($("recall") && $("recall").checked), trim:$("trim").checked,
-      secant:$("secant").value, sunit:$("sunit").value, tunit:$("tunit").value, wmode:$("wmode").value}};
+      models:[...document.querySelectorAll("#models .mchk:checked")].map(i => i.value), rec:!!($("recall") && $("recall").checked), trim:$("trim").checked, sens:$("sens").checked,
+      secant:$("secant").value, sunit:$("sunit").value, tunit:$("tunit").value, wmode:$("wmode").value, tolpct:$("tolpct").value}};
 }
 
 function applyModeUI() {
@@ -792,8 +930,8 @@ function restoreMode() {
     renderPreview(prevData);
     const v = S.sel;
     if (mode === "fit" && v.test && v.test !== "tension") { $("test").value = v.test; renderModels(); }
-    for (const k of ["sheet", "sample", "xc", "yc", "y2c", "secant", "sunit", "tunit", "wmode"]) if (v[k]) $(k).value = v[k];
-    $("trim").checked = v.trim;
+    for (const k of ["sheet", "sample", "xc", "yc", "y2c", "secant", "sunit", "tunit", "wmode", "tolpct"]) if (v[k]) $(k).value = v[k];
+    $("trim").checked = v.trim; if (v.sens !== undefined) $("sens").checked = v.sens;
     document.querySelectorAll("#models .mchk").forEach(i => i.checked = v.models.includes(i.value));
     if ($("recall")) $("recall").checked = !!v.rec;
   }
