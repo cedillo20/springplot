@@ -255,7 +255,7 @@ const $ = id => document.getElementById(id);
 const LABELS = {relaxation:["Columna de tiempo","Columna G(t) o E(t)"],creep:["Columna de tiempo","Columna J(t) o D(t)"],
   saos:["Columna ω","Columna G′"],steady:["Columna γ̇","Columna η"],tension:["Columna de deformación","Columna de esfuerzo"]};
 const AXES = {relaxation:["t [s]","G(t) [Pa]"],creep:["t [s]","J(t) [1/Pa]"],saos:["ω [rad/s]","G′, G″ [Pa]"],steady:["γ̇ [1/s]","η [Pa·s]"],tension:["Deformación [%]","Esfuerzo [MPa]"]};
-const COLORS = ["#0b6b3a","#c2571a","#1f5f99","#7a3fa0","#b08a00","#555"];
+const COLORS = ["#0b6b3a","#c2571a","#1f5f99","#7a3fa0","#b08a00","#555","#d62728","#17a2b8","#8c564b","#e377c2"];
 // Leyenda con aspecto de panel de botones y la instrucción visible (en las imágenes descargadas se quita)
 const LEG = {orientation:"h", y:-0.24, bgcolor:"#f3f8f4", bordercolor:"#b9cfbf", borderwidth:1, font:{size:12.5},
   title:{text:"<b>Clic</b> en un elemento para ocultarlo o mostrarlo · <b>doble clic</b> para ver solo ese", side:"top", font:{size:12, color:"#5d6b63"}}};
@@ -771,10 +771,12 @@ const plotImage = async format => {
   if (!$("resw").hidden && rp.data) {
     const ry = rp.layout.yaxis, mx = gd.layout.xaxis;
     data = [...gd.data, ...rp.data.map(t => ({...t, xaxis:"x", yaxis:"y2", showlegend:false}))];
-    layout = {...base, title, margin:{t:70, r:20, l:80, b:60}, xaxis:{...mx, anchor:"y2"},
+    const nLeg = gd.data.filter(t => t.showlegend !== false).length, rows = Math.ceil(nLeg / 3);
+    const top = 64 + rows * 24;
+    layout = {...base, title:{...title, y:0.993, yanchor:"top", yref:"container"}, margin:{t:top, r:20, l:80, b:60}, xaxis:{...mx, anchor:"y2"},
       yaxis:{...gd.layout.yaxis, domain:[0.36, 1]}, yaxis2:{...ry, domain:[0, 0.27], anchor:"x"},
       legend:{orientation:"h", x:0, y:1.0, yanchor:"bottom", title:{text:""}, borderwidth:0, bgcolor:"rgba(0,0,0,0)"}};
-    height = 980;
+    height = 980 + Math.max(0, rows - 2) * 24;
   }
   return (await fetch(await Plotly.toImage({data, layout}, {format, width:1200, height}))).blob();
 };
