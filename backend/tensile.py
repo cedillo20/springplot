@@ -6,6 +6,8 @@ IMPLEMENTACION para que se pueda revisar y reportar.
 """
 import numpy as np
 
+import hiperelastico
+
 NORMA = "ASTM D638-14"
 
 # Reglas numéricas propias de esta implementación (D638 no fija un algoritmo para estos pasos)
@@ -45,7 +47,7 @@ def _smooth(y, n=9):
     return np.convolve(np.pad(y, pad, mode="edge"), k, mode="valid")
 
 
-def analyze(strain_pct, stress, secant_pct=1.0, time=None, force=None, disp=None):
+def analyze(strain_pct, stress, secant_pct=1.0, time=None, force=None, disp=None, hyper_max_pct=None):
     """strain_pct: deformación en %, stress: esfuerzo nominal en MPa. time (s), force (N), disp (mm) son opcionales."""
     e = np.asarray(strain_pct, float)
     s = np.asarray(stress, float)
@@ -170,6 +172,13 @@ def analyze(strain_pct, stress, secant_pct=1.0, time=None, force=None, disp=None
         q = s > 0.05 * smax
         out["area_mm2"] = float(np.median(F[q] / s[q]))
 
+    # --- Modelos hiperelásticos (no normados): rama de carga hasta el máximo, o hasta la cedencia si ocurre antes
+    end = imax if yi is None or yi > imax else yi
+    try:
+        out["hiperelastico"] = hiperelastico.fit(ec, s, end, modulo["valor"], hyper_max_pct)
+    except Exception as ex:  # noqa
+        out["hiperelastico"] = {"error": f"No se pudieron ajustar: {ex}"}
+
     # curva corregida y reducida para graficar (se conservan siempre cedencia, máximo y ruptura)
     keep = set(range(0, r + 1, max(1, int(np.ceil((r + 1) / 600))))) | {imax, r} | ({yi} if yi is not None else set())
     keep |= set(range(r + 1, min(len(e), r + 4)))
@@ -259,4 +268,5 @@ def checks(results):
                        "regístrelos en el reporte; no vienen en el archivo."})
     c.append({"clausula": "Manual del laboratorio", "estado": "info",
               "texto": "La tenacidad (área bajo la curva) la pide el manual de la práctica 7; D638 no la define."})
+    c.append({"clausula": "Modelos hiperelásticos", "estado": "info", "texto": hiperelastico.ALCANCE})
     return c

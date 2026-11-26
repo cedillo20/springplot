@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from typing import Dict
 
 import tensile as tensile_d638
+import hiperelastico
 from engine import IMPORT_ERROR, PYRHEO, available_models, fit_settings, predict_response, recommend, run_fit
 
 MAX_BYTES = 10 * 1024 * 1024
@@ -529,12 +530,19 @@ def fit(file: UploadFile = File(...), test: str = Form(...), x_col: str = Form(.
 
 @app.post("/api/tensile")
 def tensile(file: UploadFile = File(...), sheet: str = Form(""), x_col: str = Form(""), y_col: str = Form(""),
-                  secant: float = Form(1.0), strain_unit: str = Form("pct"), stress_unit: str = Form("MPa")):
+                  secant: float = Form(1.0), strain_unit: str = Form("pct"), stress_unit: str = Form("MPa"),
+                  hyper_max: str = Form("")):
     """Ensayo de tensión analizado según ASTM D638-14 (ver tensile.py). No usa pyRheo.
     Internamente todo se calcula con deformación en % y esfuerzo en MPa; los archivos FIME ya vienen así y en
     archivos genéricos se convierten según las unidades que indique el usuario."""
     if not (0 < secant <= 100):
         raise HTTPException(400, "La deformación designada para el módulo secante debe estar entre 0 y 100 %.")
+    try:
+        hmax = float(hyper_max) if str(hyper_max).strip() else None
+    except ValueError:
+        raise HTTPException(400, "La deformación máxima del ajuste hiperelástico debe ser un número.")
+    if hmax is not None and hmax <= 0:
+        raise HTTPException(400, "La deformación máxima del ajuste hiperelástico debe ser mayor que 0 %.")
     STRAIN = {"pct": 1.0, "frac": 100.0}
     STRESS = {"MPa": 1.0, "kPa": 1e-3, "Pa": 1e-6}
     if strain_unit not in STRAIN or stress_unit not in STRESS:
@@ -559,7 +567,7 @@ def tensile(file: UploadFile = File(...), sheet: str = Form(""), x_col: str = Fo
     for label, kw in series.items():
         kw = {k: (None if v is None else pd.to_numeric(v, errors="coerce").to_numpy(float)) for k, v in kw.items()}
         try:
-            r = tensile_d638.analyze(secant_pct=secant, **kw)
+            r = tensile_d638.analyze(secant_pct=secant, hyper_max_pct=hmax, **kw)
         except Exception as e:
             errors.append({"sample": label, "error": str(e)})
             continue
@@ -580,6 +588,7 @@ def tensile(file: UploadFile = File(...), sheet: str = Form(""), x_col: str = Fo
                                     if strain_unit == "pct" and emax < 1 else "")})
     return {"results": out, "errors": errors, "format": "FIME" if tb["fime"] else "", "norma": tensile_d638.NORMA,
             "resumen": tensile_d638.summarize(out), "verificaciones": checks,
+            "hiperelastico_resumen": hiperelastico.summarize(out), "hiperelastico_alcance": hiperelastico.ALCANCE,
             "implementacion": tensile_d638.IMPLEMENTACION, "secante_designada": secant,
             "unidades_entrada": None if tb["fime"] else {"deformacion": strain_unit, "esfuerzo": stress_unit}}
 

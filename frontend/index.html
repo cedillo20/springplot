@@ -152,6 +152,8 @@ small{color:var(--mute)}
       1 % es el error admitido en la fuerza por ASTM E4; usa el de tu equipo (certificado de calibración) si lo conoces. Declárala en tu reporte.</small></div>
     <div id="secw" hidden><label for="secant">Deformación designada para módulo secante [%]</label><input type="number" id="secant" value="1" min="0.01" max="100" step="any">
       <small>Solo se usa si una probeta no tiene porción lineal (ASTM D638, 11.5). Debe reportarse junto con el módulo.</small>
+      <label for="hmax" style="margin-top:10px">Deformación máxima del ajuste hiperelástico [%]</label><input type="number" id="hmax" placeholder="toda la rama de carga" min="0.1" step="any">
+      <small>Neo-Hookeano y Mooney-Rivlin se ajustan a la rama de carga (hasta el esfuerzo máximo o la cedencia). Déjalo vacío para usar toda la rama, o limita el rango que te interesa. No normado por ASTM.</small>
       <div id="unw" class="g2" hidden>
         <div><label for="sunit">Deformación en</label><select id="sunit"><option value="pct">% </option><option value="frac">fracción (mm/mm)</option></select></div>
         <div><label for="tunit">Esfuerzo en</label><select id="tunit"><option>MPa</option><option>kPa</option><option>Pa</option></select></div>
@@ -181,6 +183,7 @@ small{color:var(--mute)}
       <h2 style="margin-top:22px" id="mh">Comparación de modelos</h2>
       <div class="scroll" id="metrics"></div>
       <small id="mnote">R² lineal puede ser engañoso con datos que abarcan varias décadas; R² log se calcula sobre log₁₀ de los datos. RSS<sub>w</sub> es el residual ponderado que pyRheo minimiza.</small>
+      <div id="hyper"></div>
       <h2 style="margin-top:22px" id="ph">Parámetros</h2>
       <div class="scroll" id="params"></div>
     </section>
@@ -386,6 +389,9 @@ async function runTensile() {
   const sec = parseFloat($("secant").value);
   if (!(sec > 0 && sec <= 100)) { note("La deformación designada para el módulo secante debe estar entre 0 y 100 %.", "err"); return; }
   fd.append("secant", sec);
+  const hm = $("hmax").value.trim();
+  if (hm && !(parseFloat(hm) > 0)) { note("La deformación máxima del ajuste hiperelástico debe ser mayor que 0 %.", "err"); return; }
+  fd.append("hyper_max", hm);
   if (!isFime) { fd.append("strain_unit", $("sunit").value); fd.append("stress_unit", $("tunit").value); }
   $("run").disabled = true; $("run").textContent = "Analizando…"; note("");
   try {
@@ -394,7 +400,7 @@ async function runTensile() {
     // D638 10.3 Nota 11 y 11.3.2: si la deformación viene de la separación de mordazas, es deformación nominal
     const nominal = d.verificaciones.some(c => c.clausula.startsWith("10.3") && c.estado === "aviso");
     const xlab = nominal ? "Deformación nominal [%]" : "Deformación [%]";
-    last = {test:"tension", tensile:d.results, d638:d, xlabel:xlab, meta:{archivo:file.name, hoja:$("sheet").value, formato:d.format || "", secante_designada:sec}};
+    last = {test:"tension", tensile:d.results, d638:d, xlabel:xlab, meta:{archivo:file.name, hoja:$("sheet").value, formato:d.format || "", secante_designada:sec, hiperelastico_hasta_pct:hm ? parseFloat(hm) : null}};
     renderTension(last);
   } catch (e) { note(e.message, "err"); }
   $("run").disabled = false; $("run").textContent = "Analizar";
@@ -411,6 +417,10 @@ function renderTension(L, scroll = true) {
       marker:{symbol:"diamond", size:10, color:c, line:{color:"#fff", width:1}}, hovertemplate:"Cedencia (A2.22)<br>%{y:.3g} MPa · %{x:.3g} %<extra></extra>"});
     if (s.ruptura.detectada) traces.push({x:[s.ruptura.deformacion], y:[s.ruptura.esfuerzo], mode:"markers", name:`${s.sample} · ruptura`, legendgroup:s.sample, showlegend:false,
       marker:{symbol:"x", size:10, color:c}, hovertemplate:"Ruptura<br>%{y:.3g} MPa · %{x:.3g} %<extra></extra>"});
+    const H = s.hiperelastico;
+    if (H && H.curvas) [["NeoHookeano", "dot", "Neo-Hookeano"], ["MooneyRivlin", "dash", "Mooney-Rivlin"]].forEach(([m, dash, nm]) =>
+      traces.push({x:H.curvas.deformacion, y:H.curvas[m], mode:"lines", name:`${s.sample} · ${nm}`, legendgroup:`${s.sample}-${m}`,
+        line:{color:c, width:1.6, dash}, hovertemplate:`${nm}<br>%{y:.3g} MPa · %{x:.3g} %<extra></extra>`}));
   });
   Plotly.newPlot("plot", traces, {xaxis:{title:xlab, gridcolor:"#d9e1e7"}, yaxis:{title:AXES.tension[1], gridcolor:"#d9e1e7"},
     paper_bgcolor:"rgba(0,0,0,0)", plot_bgcolor:"rgba(0,0,0,0)", font:{color:"#17222d"}, margin:{t:10, r:10}, legend:LEG}, {responsive:true});
@@ -431,6 +441,8 @@ function renderTension(L, scroll = true) {
   $("mnote").innerHTML = (sec_ ? `* Módulo secante a ${s3(sec)} % de deformación en las probetas sin porción lineal (11.5). ` : "") +
     `Deformaciones medidas desde el cero corregido del pie de curva (Anexo A1). † La tenacidad la pide el manual del laboratorio; D638 no la define. ` +
     (d.errors && d.errors.length ? "No se pudo analizar: " + d.errors.map(e => `${e.sample} (${e.error})`).join("; ") + "." : "");
+  $("hyper").innerHTML = hyperBlock(d, s3, s2);
+  drawMooney(d);
   const ico = {ok:"✓", aviso:"⚠", info:"ℹ"}, col = {ok:"var(--acc)", aviso:"var(--acc2)", info:"var(--mute)"};
   $("ph").textContent = "Verificación contra ASTM D638-14";
   $("params").innerHTML = `<table>${d.verificaciones.map(c => `<tr><td style="color:${col[c.estado]};font-weight:600;width:1%">${ico[c.estado]}</td>` +
@@ -438,6 +450,57 @@ function renderTension(L, scroll = true) {
     `<details style="margin-top:10px"><summary><small>Reglas numéricas de esta implementación (D638 describe estos pasos de forma gráfica, sin algoritmo)</small></summary>` +
     `<table>${Object.entries(d.implementacion).map(([k, v]) => `<tr><td style="width:1%">${esc(k.replace(/_/g, " "))}</td><td style="white-space:normal">${esc(v)}</td></tr>`).join("")}</table></details>`;
   $("res").hidden = false; if (scroll) $("res").scrollIntoView({behavior:"smooth", block:"start"});
+}
+
+// ---------- Modelos hiperelásticos (Neo-Hookeano y Mooney-Rivlin; no normados por ASTM) ----------
+const HNAME = {NeoHookeano:"Neo-Hookeano", MooneyRivlin:"Mooney-Rivlin"};
+function hyperBlock(d, s3, s2) {
+  const ok = d.results.filter(s => s.hiperelastico && s.hiperelastico.modelos);
+  if (!ok.length) return "";
+  const ic = u => u ? `${s3(u.valor)} ± ${s2(u.error_estandar)}` : "—";
+  const rows = [];
+  ok.forEach(s => {
+    const H = s.hiperelastico;
+    Object.entries(H.modelos).forEach(([m, v], i) => rows.push(`<tr>${i === 0 ? `<td rowspan="2">${esc(s.sample)}<br><small>${s3(H.rango_deformacion_pct[0])}–${s3(H.rango_deformacion_pct[1])} %` +
+      `<br>λ máx ${s3(H.lambda_max)}</small></td>` : ""}<td>${HNAME[m]}</td><td>${ic(v.ic95.C10)}</td><td>${m === "MooneyRivlin" ? ic(v.ic95.C01) : "—"}</td>` +
+      `<td><b>${s3(v.mu)}</b></td><td>${s3(v.E0)}<br><small>${v.E0_vs_modulo_D638_pct == null ? "" : (v.E0_vs_modulo_D638_pct > 0 ? "+" : "") + v.E0_vs_modulo_D638_pct.toFixed(0) + " % vs D638"}</small></td>` +
+      `<td>${v.r2 == null ? "—" : v.r2.toFixed(4)}</td><td>${s3(v.aad_pct)}</td></tr>`));
+  });
+  const R = d.hiperelastico_resumen || {}, st = x => x ? `${s3(x.promedio)}${x.desv_est != null ? " ± " + s2(x.desv_est) : ""}` : "—";
+  const avisos = ok.flatMap(s => [...Object.entries(s.hiperelastico.modelos).flatMap(([m, v]) => v.avisos.map(a => `${s.sample} · ${HNAME[m]}: ${a}`)),
+    ...(s.hiperelastico.aviso_rango ? [`${s.sample}: ${s.hiperelastico.aviso_rango}`] : [])]);
+  const sweep = ok.map(s => `<tr><th colspan="5">${esc(s.sample)}</th></tr>` + s.hiperelastico.barrido_rango.map(b =>
+    `<tr><td>${s3(b.hasta_pct)} %</td><td>${s3(b.NeoHookeano.mu)} <small>(AAD ${s3(b.NeoHookeano.aad_pct)} %)</small></td>` +
+    `<td>${s3(b.MooneyRivlin.mu)} <small>(AAD ${s3(b.MooneyRivlin.aad_pct)} %)</small></td><td>${s3(b.MooneyRivlin.C10)}</td><td>${s3(b.MooneyRivlin.C01)}</td></tr>`).join("")).join("");
+  return `<h3 style="margin:18px 0 6px">Modelos hiperelásticos <small style="font-weight:400;color:var(--mute)">(no normados por ASTM)</small></h3>` +
+    `<div class="eq">${tex(String.raw`\text{Neo-Hookeano: } P = 2C_{10}\left(\lambda-\lambda^{-2}\right) \qquad \text{Mooney-Rivlin: } P = 2\left(C_{10}+\frac{C_{01}}{\lambda}\right)\left(\lambda-\lambda^{-2}\right)`)}` +
+    `<small>λ = 1 + ε (deformación desde el cero corregido), P = esfuerzo nominal. μ = 2(C<sub>10</sub> + C<sub>01</sub>) es el módulo de corte inicial y E<sub>0</sub> = 3μ el de Young inicial (incompresible).</small></div>` +
+    `<div class="scroll"><table><tr><th>Probeta</th><th>Modelo</th><th>C<sub>10</sub> [MPa]</th><th>C<sub>01</sub> [MPa]</th><th>μ [MPa]</th><th>E<sub>0</sub> = 3μ [MPa]</th><th>R²</th><th>AAD [%]</th></tr>${rows.join("")}` +
+    `<tr><th colspan="2">Promedio ± DE</th><th>NH: ${st(R.NeoHookeano && R.NeoHookeano.C10)}<br>MR: ${st(R.MooneyRivlin && R.MooneyRivlin.C10)}</th><th>MR: ${st(R.MooneyRivlin && R.MooneyRivlin.C01)}</th>` +
+    `<th>NH: ${st(R.NeoHookeano && R.NeoHookeano.mu)}<br>MR: ${st(R.MooneyRivlin && R.MooneyRivlin.mu)}</th><th colspan="3"></th></tr></table></div>` +
+    `<small>C<sub>10</sub>, C<sub>01</sub>: valor ± error estándar del ajuste (mínimos cuadrados lineales sobre el esfuerzo nominal). Promedio ± DE: entre probetas. ` +
+    `E<sub>0</sub> se compara con el módulo de D638: en deformaciones pequeñas deberían coincidir.</small>` +
+    (avisos.length ? `<details class="msg err" style="margin:8px 0" open><summary>⚠ ${avisos.length} avisos sobre los ajustes hiperelásticos</summary>${avisos.map(a => "⚠ " + esc(a)).join("<br>")}</details>` : "") +
+    `<div id="mooneyplot" style="height:330px;margin-top:8px"></div><small>Gráfica de Mooney: P / [2(λ − λ⁻²)] contra 1/λ. Mooney-Rivlin es una recta (ordenada C<sub>10</sub>, pendiente C<sub>01</sub>) y Neo-Hookeano una horizontal; ` +
+    `si los puntos se curvan, ninguno de los dos describe el material en ese rango.</small>` +
+    `<details style="margin-top:8px"><summary><small>Dependencia del rango: constantes ajustadas hasta distintas deformaciones</small></summary>` +
+    `<div class="scroll"><table><tr><th>Ajuste hasta</th><th>μ Neo-Hookeano [MPa]</th><th>μ Mooney-Rivlin [MPa]</th><th>C<sub>10</sub> MR</th><th>C<sub>01</sub> MR</th></tr>${sweep}</table></div>` +
+    `<small>Si μ cambia mucho con el rango, el modelo no describe la forma de la curva: reporta las constantes junto con el rango ajustado.</small></details>` +
+    `<small>${esc(d.hiperelastico_alcance || "")}</small>`;
+}
+function drawMooney(d) {
+  const el = $("mooneyplot"); if (!el) return;
+  const tr = [];
+  d.results.forEach((s, k) => {
+    const H = s.hiperelastico; if (!H || !H.mooney) return;
+    const c = COLORS[k % COLORS.length], mr = H.modelos.MooneyRivlin.parametros, nh = H.modelos.NeoHookeano.parametros;
+    const xs = H.mooney.inv_lambda, x0 = Math.min(...xs), x1 = Math.max(...xs);
+    tr.push({x:xs, y:H.mooney.esfuerzo_reducido, mode:"markers", name:`${s.sample} · datos`, legendgroup:s.sample, marker:{color:c, size:4}});
+    tr.push({x:[x0, x1], y:[mr.C10 + mr.C01 * x0, mr.C10 + mr.C01 * x1], mode:"lines", name:`${s.sample} · Mooney-Rivlin`, legendgroup:s.sample, line:{color:c, dash:"dash"}});
+    tr.push({x:[x0, x1], y:[nh.C10, nh.C10], mode:"lines", name:`${s.sample} · Neo-Hookeano`, legendgroup:s.sample, line:{color:c, dash:"dot"}});
+  });
+  Plotly.newPlot(el, tr, {xaxis:{title:"1/λ", gridcolor:"#d9e1e7"}, yaxis:{title:"P / [2(λ − λ⁻²)] [MPa]", gridcolor:"#d9e1e7"},
+    paper_bgcolor:"rgba(0,0,0,0)", plot_bgcolor:"rgba(0,0,0,0)", font:{color:"#17222d"}, margin:{t:10, r:10}, showlegend:false}, {responsive:true});
 }
 
 $("run").onclick = async () => {
@@ -460,6 +523,7 @@ $("run").onclick = async () => {
 };
 
 function show(d, scroll = true) {
+  $("hyper").innerHTML = "";
   $("res").hidden = false;  // visible antes de dibujar, para que Plotly mida el ancho real del recuadro
   $("mh").textContent = "Comparación de modelos"; $("ph").textContent = "Parámetros";
   $("mnote").innerHTML = "RMS y P95: error relativo sobre <b>todas</b> las observaciones válidas (no solo los promedios ajustados); son las métricas más directas para comparar modelos. " +
@@ -911,7 +975,7 @@ function saveMode() {
   ST[mode] = {file, prev:prevData, last, msg:$("msg").innerHTML,
     sel:{sheet:$("sheet").value, sample:$("sample").value, test:$("test").value, xc:$("xc").value, yc:$("yc").value, y2c:$("y2c").value,
       models:[...document.querySelectorAll("#models .mchk:checked")].map(i => i.value), rec:!!($("recall") && $("recall").checked), trim:$("trim").checked, sens:$("sens").checked,
-      secant:$("secant").value, sunit:$("sunit").value, tunit:$("tunit").value, wmode:$("wmode").value, tolpct:$("tolpct").value}};
+      secant:$("secant").value, sunit:$("sunit").value, tunit:$("tunit").value, wmode:$("wmode").value, tolpct:$("tolpct").value, hmax:$("hmax").value}};
 }
 
 function applyModeUI() {
@@ -932,7 +996,7 @@ function restoreMode() {
     renderPreview(prevData);
     const v = S.sel;
     if (mode === "fit" && v.test && v.test !== "tension") { $("test").value = v.test; renderModels(); }
-    for (const k of ["sheet", "sample", "xc", "yc", "y2c", "secant", "sunit", "tunit", "wmode", "tolpct"]) if (v[k]) $(k).value = v[k];
+    for (const k of ["sheet", "sample", "xc", "yc", "y2c", "secant", "sunit", "tunit", "wmode", "tolpct", "hmax"]) if (v[k] !== undefined) $(k).value = v[k];
     $("trim").checked = v.trim; if (v.sens !== undefined) $("sens").checked = v.sens;
     document.querySelectorAll("#models .mchk").forEach(i => i.checked = v.models.includes(i.value));
     if ($("recall")) $("recall").checked = !!v.rec;
