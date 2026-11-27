@@ -1,4 +1,4 @@
-# SpringPlot: imagen para Railway (sirve también para Render, Fly.io o un VPS)
+# Imagen de SpringPlot
 FROM python:3.12.10-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -8,11 +8,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Dependencias primero: si solo cambia el código, este paso se reutiliza y el build es más rápido
+# Dependencias
 COPY backend/requirements.txt backend/requirements.txt
 RUN pip install -r backend/requirements.txt
 
-# Código: main.py busca la página en ../frontend
+# Código
 COPY backend backend
 COPY frontend frontend
 
@@ -22,5 +22,5 @@ USER springplot
 
 WORKDIR /app/backend
 EXPOSE 8000
-# Railway asigna el puerto en la variable PORT
+# Puerto de la variable PORT (8000 por defecto)
 CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]

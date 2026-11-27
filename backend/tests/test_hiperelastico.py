@@ -1,7 +1,4 @@
-"""Pruebas de los modelos hiperelásticos (Neo-Hookeano y Mooney-Rivlin) en tensión uniaxial.
-
-Correr desde la carpeta backend:  python -m pytest tests -v
-"""
+"""Pruebas de los modelos Neo-Hookeano y Mooney-Rivlin en tensión uniaxial."""
 import os
 import sys
 

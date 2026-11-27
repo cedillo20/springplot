@@ -1,21 +1,18 @@
-"""Parámetros en la notación de tensión del grupo del doctor (Segura-Méndez, Puente-Córdova et al., 2025).
+"""Conversión entre los parámetros de pyRheo y la notación del doctor (E, tau, alpha).
 
-Springpot: sigma(t) = E tau^alpha D^alpha epsilon(t) (derivada de Caputo), tau = eta/E, 0 <= alpha <= 1.
-Ecuaciones de creep y relajación de Mainardi y Spada (2011), reescritas en tensión:
+Springpot: sigma(t) = E tau^alpha D^alpha epsilon(t), tau = eta/E, 0 <= alpha <= 1.
 
-  FMM (resorte E en serie con springpot E tau^alpha) = FractionalMaxwellGel de pyRheo
+  FMM = FractionalMaxwellGel
       E(t) = E E_alpha[-(t/tau)^alpha]                  D(t) = (1/E) [1 + (t/tau)^alpha / Gamma(1+alpha)]
-  KVF (resorte E en paralelo con springpot E tau^alpha) = FractionalKelvinVoigtS de pyRheo
+  KVF = FractionalKelvinVoigtS
       E(t) = E [1 + (t/tau)^-alpha / Gamma(1-alpha)]    D(t) = (1/E) {1 - E_alpha[-(t/tau)^alpha]}
-  ZFM (resorte E_r en paralelo con una rama FMM; E_u = módulo no relajado) = FractionalZenerSolidS de pyRheo
+  ZFM = FractionalZenerSolidS
       E(t) = E_r + (E_u - E_r) E_alpha[-(t/tau_s)^alpha]
       D(t) = 1/E_u + (1/E_r - 1/E_u) {1 - E_alpha[-(t/tau_e)^alpha]},   tau_e^alpha = tau_s^alpha E_u/E_r
 
-Equivalencias con pyRheo: G_s = E y V = E tau^alpha (FMM); G_p = E y V = E tau^alpha (KVF);
-G_p = E_r, G_s = E_u - E_r y V = G_s tau_s^alpha (ZFM). Con alpha = 1 se recuperan Maxwell, Kelvin-Voigt y Zener.
-
-Parámetro primario: el tiempo que se observa en el ensayo (en creep del ZFM, el de retardo tau_e; en relajación,
-el de relajación tau_s); el otro se reporta como derivado, con su intervalo por el método delta.
+Equivalencias: G_s = E y V = E tau^alpha (FMM); G_p = E y V = E tau^alpha (KVF);
+G_p = E_r, G_s = E_u - E_r y V = G_s tau_s^alpha (ZFM).
+Parámetro primario del ZFM: tau_e en creep y tau_s en relajación; el otro es derivado.
 """
 import numpy as np
 

@@ -1,7 +1,4 @@
-"""Pruebas del preprocesamiento (Sección 4 del plan): pesos 1/SE² por intervalo y prueba de sensibilidad a la rampa.
-
-Correr desde la carpeta backend:  python -m pytest tests -v
-"""
+"""Pruebas de los pesos 1/SE² por intervalo y de la prueba de sensibilidad a la rampa."""
 import json
 import os
 import sys

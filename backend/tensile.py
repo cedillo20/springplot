@@ -1,8 +1,6 @@
 """Análisis de tensión según ASTM D638-14.
 
-Cada cálculo cita la cláusula que sigue. Donde la norma describe un procedimiento gráfico sin fijar
-un algoritmo (por ejemplo, "la porción lineal inicial"), la regla numérica usada se documenta en
-IMPLEMENTACION para que se pueda revisar y reportar.
+Las reglas numéricas de los pasos que la norma no fija están en IMPLEMENTACION.
 """
 import numpy as np
 
@@ -61,13 +59,13 @@ def analyze(strain_pct, stress, secant_pct=1.0, time=None, force=None, disp=None
     imax = int(np.argmax(s))
     smax = float(s[imax])
 
-    # --- Ruptura (10.6, A2.8.1, A2.17.1): momento de la ruptura
+    # Ruptura (10.6, A2.8.1, A2.17.1)
     drops = np.diff(s[imax:]) if imax < len(s) - 1 else np.array([0.0])
     jd = int(np.argmin(drops)) if len(drops) else 0
     rotura = bool(len(drops) and -drops[jd] >= 0.10 * smax)
     r = imax + jd if rotura else len(s) - 1
 
-    # --- Tangente de pendiente máxima en la región inicial (11.4, A1.2, A1.3)
+    # Tangente de pendiente máxima en la región inicial (11.4, A1.2, A1.3)
     lim = np.where(s[: imax + 1] <= 0.25 * smax)[0]
     n_ini = int(lim[-1]) + 1 if len(lim) else imax + 1
     step = np.median(np.diff(e[: max(n_ini, 3)])) if n_ini > 2 else np.nan
@@ -75,7 +73,7 @@ def analyze(strain_pct, stress, secant_pct=1.0, time=None, force=None, disp=None
         raise ValueError("La región inicial (esfuerzo <= 25 % del máximo) tiene menos de 5 puntos; no se puede trazar la "
                          "tangente del módulo. Revisa la frecuencia de muestreo o las unidades de deformación.")
     w = max(5, int(np.ceil(0.25 / step)) if np.isfinite(step) and step > 0 else 5)
-    w = min(w, n_ini)  # la ventana nunca puede ser mayor que la región inicial
+    w = min(w, n_ini)  # la ventana no pasa de la región inicial
     best = None
     for i in range(0, max(1, n_ini - w + 1)):
         seg = slice(i, i + w)
@@ -88,11 +86,11 @@ def analyze(strain_pct, stress, secant_pct=1.0, time=None, force=None, disp=None
         raise ValueError("No se encontró una región inicial con pendiente positiva.")
     E_t, b_t, r2_t, i_t = best
 
-    # Corrección del pie de curva (11.1, Anexo A1): el cero de deformación se mueve a la intersección de la tangente
+    # Pie de curva (11.1, Anexo A1): nuevo cero en la intersección de la tangente
     toe = max(0.0, -b_t / E_t * 100.0)   # % de deformación
     ec = e - toe
 
-    # ¿Existe porción lineal? (11.4 frente a 11.5)
+    # Porción lineal (11.4) o módulo secante (11.5)
     local = np.gradient(_smooth(s, 5), e / 100.0)
     a = i_t
     z = i_t + w - 1
@@ -108,7 +106,7 @@ def analyze(strain_pct, stress, secant_pct=1.0, time=None, force=None, disp=None
                   "descripcion": f"pendiente de la porción lineal inicial ({e[a] - toe:.2f}–{e[z] - toe:.2f} % de deformación corregida)",
                   "r2_tangente": float(r2_t)}
     else:
-        # 11.5 y A1.3: sin proporcionalidad evidente, módulo secante desde el cero corregido B'
+        # Módulo secante desde el cero corregido (11.5, A1.3)
         target = secant_pct
         if target > ec[r]:
             raise ValueError("La deformación designada para el módulo secante es mayor que la deformación a la ruptura.")
@@ -117,7 +115,7 @@ def analyze(strain_pct, stress, secant_pct=1.0, time=None, force=None, disp=None
                   "descripcion": f"módulo secante a {target:g} % de deformación, medido desde el cero corregido",
                   "deformacion_designada": target, "tangente_maxima": float(E_t), "r2_tangente": float(r2_t)}
 
-    # --- Punto de cedencia (A2.22): primer punto donde la deformación aumenta sin aumento de esfuerzo
+    # Punto de cedencia (A2.22)
     ss = _smooth(s[: r + 1])
     yi = None
     k_span = 1.0
@@ -126,11 +124,11 @@ def analyze(strain_pct, stress, secant_pct=1.0, time=None, force=None, disp=None
             ahead = np.where(e[i + 1: r + 1] <= e[i] + k_span)[0]
             nxt = ss[i + 1: i + 1 + max(len(ahead), 1)]
             if len(nxt) and ss[i] > np.max(nxt) - 1e-12:
-                yi = int(i - 4 + np.argmax(s[max(0, i - 4): i + 5]))  # máximo crudo cerca del punto suavizado
+                yi = int(i - 4 + np.argmax(s[max(0, i - 4): i + 5]))  # máximo sin suavizar cerca del punto
                 break
     cedencia = None if yi is None else {"esfuerzo": float(s[yi]), "deformacion": float(ec[yi])}
 
-    # --- Resistencia a la tensión (11.2, A2.18)
+    # Resistencia a la tensión (11.2, A2.18)
     if yi is not None and s[yi] >= smax * 0.999:
         designacion = "en la cedencia"
     elif not rotura:
@@ -140,11 +138,11 @@ def analyze(strain_pct, stress, secant_pct=1.0, time=None, force=None, disp=None
     else:
         designacion = "esfuerzo máximo entre cedencia y ruptura"
 
-    # --- Tenacidad (no definida en D638; la pide el manual del laboratorio)
+    # Tenacidad (la pide el manual del laboratorio; D638 no la define)
     seg = slice(0, r + 1)
     e_t = np.clip(ec[seg], 0, None) / 100.0
     s_t = np.clip(s[seg], 0, None)
-    tenacidad = float(np.sum((s_t[1:] + s_t[:-1]) * np.diff(e_t)) / 2) if rotura else None  # trapecio; sin ruptura no aplica
+    tenacidad = float(np.sum((s_t[1:] + s_t[:-1]) * np.diff(e_t)) / 2) if rotura else None  # regla del trapecio; solo con ruptura
 
     out = {
         "n_puntos": int(len(e)),
@@ -172,14 +170,14 @@ def analyze(strain_pct, stress, secant_pct=1.0, time=None, force=None, disp=None
         q = s > 0.05 * smax
         out["area_mm2"] = float(np.median(F[q] / s[q]))
 
-    # --- Modelos hiperelásticos (no normados): rama de carga hasta el máximo, o hasta la cedencia si ocurre antes
+    # Modelos hiperelásticos (no normados): rama de carga hasta el máximo o la cedencia
     end = imax if yi is None or yi > imax else yi
     try:
         out["hiperelastico"] = hiperelastico.fit(ec, s, end, modulo["valor"], hyper_max_pct)
-    except Exception as ex:  # noqa
+    except Exception as ex:
         out["hiperelastico"] = {"error": f"No se pudieron ajustar: {ex}"}
 
-    # curva corregida y reducida para graficar (se conservan siempre cedencia, máximo y ruptura)
+    # curva reducida para graficar, con cedencia, máximo y ruptura
     keep = set(range(0, r + 1, max(1, int(np.ceil((r + 1) / 600))))) | {imax, r} | ({yi} if yi is not None else set())
     keep |= set(range(r + 1, min(len(e), r + 4)))
     idx = sorted(keep)

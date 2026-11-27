@@ -1,27 +1,14 @@
-"""Modelos hiperelásticos (Neo-Hookeano y Mooney-Rivlin) ajustados a la curva de tensión uniaxial.
+"""Ajuste de Neo-Hookeano y Mooney-Rivlin a la curva de tensión uniaxial (no normado por ASTM).
 
-NO NORMADO POR ASTM. ASTM D412 (tensión de hules vulcanizados y elastómeros termoplásticos) y D638 definen el ensayo,
-pero ninguna norma ASTM define cómo ajustar constantes hiperelásticas. Se documenta aquí el procedimiento para que se
-pueda reportar y reproducir.
+Supone material incompresible e isótropo, lambda = 1 + epsilon (desde el cero corregido de D638, Anexo A1) y
+esfuerzo nominal P = F/A0. Se ajusta la rama de carga hasta el esfuerzo máximo o la cedencia.
 
-Hipótesis (todas deben declararse en el reporte):
-  - material incompresible e isótropo; tensión uniaxial homogénea, estiramiento lambda = 1 + epsilon (epsilon en
-    fracción, medida desde el cero corregido del pie de curva de D638, Anexo A1);
-  - respuesta elástica: se ajusta solo la rama de carga hasta el esfuerzo máximo (o hasta la cedencia si ocurre antes).
-    El TPU es viscoelástico: las constantes valen para la velocidad de ensayo usada;
-  - esfuerzo nominal P = F/A0 (el que reporta D638).
-
-Energía de deformación y esfuerzo nominal en tensión uniaxial (Treloar; Ogden, Non-linear Elastic Deformations):
   Neo-Hookeano:   W = C10 (I1 - 3)                     P = 2 C10 (lambda - lambda^-2)
   Mooney-Rivlin:  W = C10 (I1 - 3) + C01 (I2 - 3)      P = 2 (C10 + C01/lambda) (lambda - lambda^-2)
-Módulo de corte inicial mu = 2 (C10 + C01) y módulo de Young inicial E0 = 3 mu (incompresible).
+  mu = 2 (C10 + C01), E0 = 3 mu
 
-Los dos modelos son LINEALES en sus constantes, así que el ajuste es por mínimos cuadrados lineales (solución exacta,
-sin valores iniciales ni optimizador) sobre el esfuerzo nominal. El IC 95 % sale de la covarianza s^2 (A^T A)^-1 con
-t de Student (n - k grados de libertad).
-
-Gráfica de Mooney: P / [2 (lambda - lambda^-2)] contra 1/lambda. Mooney-Rivlin es una recta (ordenada C10,
-pendiente C01); Neo-Hookeano es una horizontal. Si los puntos se curvan, ninguno de los dos describe el material.
+Ajuste por mínimos cuadrados lineales; IC 95 % con la covarianza s^2 (A^T A)^-1 y t de Student.
+Gráfica de Mooney: P / [2 (lambda - lambda^-2)] contra 1/lambda.
 """
 import numpy as np
 from scipy.stats import t as student_t
@@ -63,7 +50,7 @@ def _fit_one(lam, P, model):
     ic = {nm: {"valor": float(v), "error_estandar": float(e), "inf": float(v - q * e), "sup": float(v + q * e)}
           for nm, v, e in zip(names, c, se)}
     mu = 2.0 * sum(params.values())
-    # error estándar de mu = 2 (C10 + C01): suma de las varianzas más la covarianza
+    # error estándar de mu = 2 (C10 + C01)
     se_mu = 2.0 * float(np.sqrt(np.sum(cov)))
     ss_tot = float(np.sum((P - P.mean()) ** 2))
     rel = np.abs(res[P > 0] / P[P > 0]) * 100
@@ -115,19 +102,18 @@ def fit(strain_pct, stress_MPa, end_index, modulo_D638=None, max_pct=None):
         r = _fit_one(lam, s, m)
         r["ecuacion"] = MODELOS[m]["ecuacion"]
         if modulo_D638:
-            # comparación con el módulo de D638 (pendiente inicial): ambos deben coincidir en deformaciones pequeñas
+            # diferencia con el módulo de D638
             r["E0_vs_modulo_D638_pct"] = float((r["E0"] / modulo_D638 - 1) * 100)
         out["modelos"][m] = r
-    # curvas para graficar (submuestreadas) y gráfica de Mooney
+    # curvas para graficar y gráfica de Mooney
     idx = np.unique(np.linspace(0, len(e) - 1, min(len(e), 200)).astype(int))
     out["curvas"] = {"deformacion": e[idx].tolist(),
                      **{m: stress(m, out["modelos"][m]["parametros"], e[idx]).tolist() for m in MODELOS}}
     g = 2.0 * (lam - lam ** -2)
-    keep = s > 0.05 * s.max()     # cerca de cero la división amplifica el ruido
+    keep = s > 0.05 * s.max()  # sin los puntos cerca de cero
     out["mooney"] = {"inv_lambda": (1 / lam[keep])[::max(1, keep.sum() // 200)].tolist(),
                      "esfuerzo_reducido": (s[keep] / g[keep])[::max(1, keep.sum() // 200)].tolist()}
-    # Dependencia del rango: si las constantes cambian mucho al cambiar la deformación máxima ajustada, el modelo no
-    # describe la forma de la curva y sus constantes solo valen para ese rango
+    # Barrido del rango: constantes ajustadas hasta cada deformación de BARRIDO_PCT
     barrido = []
     for lim in [x for x in BARRIDO_PCT if x < e_all.max()] + [float(e_all.max())]:
         q = e_all <= lim

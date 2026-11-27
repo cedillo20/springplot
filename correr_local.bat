@@ -1,11 +1,10 @@
 @echo off
-rem SpringPlot en tu computadora (Windows). Doble clic para iniciar; cierra la ventana para detenerlo.
-rem La primera vez crea un entorno de Python en la carpeta .venv e instala las dependencias (varios minutos).
+rem Inicia SpringPlot en local (Windows)
 setlocal
 cd /d "%~dp0"
 title SpringPlot local
 
-rem 1) Buscar Python 3.12 (la version con la que se probo todo)
+rem Buscar Python 3.12
 set "PY="
 py -3.12 --version >nul 2>&1 && set "PY=py -3.12"
 if not defined PY (
@@ -18,7 +17,7 @@ if not defined PY (
   exit /b 1
 )
 
-rem 2) Entorno de Python: se crea la primera vez y se reinstala solo si cambia requirements.txt
+rem Crear el entorno e instalar las dependencias si cambió requirements.txt
 if not exist ".venv\Scripts\python.exe" (
   echo Creando el entorno de Python ^(solo la primera vez^)...
   %PY% -m venv .venv
@@ -40,7 +39,7 @@ if errorlevel 1 (
   copy /y "backend\requirements.txt" ".venv\requirements.instalado" >nul
 )
 
-rem 3) Arrancar el servidor y abrir el navegador cuando este listo
+rem Iniciar el servidor y abrir el navegador
 echo.
 echo SpringPlot corriendo en http://127.0.0.1:8000
 echo Para detenerlo, cierra esta ventana.

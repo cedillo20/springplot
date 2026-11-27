@@ -1,11 +1,4 @@
-"""Pruebas de regresión con datos sintéticos de solución conocida.
-
-Correr desde la carpeta backend:
-    pip install pytest httpx
-    python -m pytest tests -v
-
-Cada prueba fija un caso que ya falló alguna vez o una propiedad teórica que la app debe cumplir.
-"""
+"""Pruebas con datos sintéticos de solución conocida."""
 import json
 import os
 import sys
@@ -46,10 +39,10 @@ def _tensile(e, s, **units):
     return r
 
 
-# ------------------------------------------------------------------ ajuste de modelos
+# Ajuste de modelos
 @pytest.mark.parametrize("t", [np.linspace(0, 50, 101), np.linspace(1, 60, 60), np.logspace(-2, 3, 100)])
 def test_maxwell_relajacion_recupera_parametros(t):
-    # falló con tiempos espaciados linealmente: G_s = 62 872, eta_s = 7 558, R² = -0.49
+    # tiempos espaciados linealmente
     res = _fit("relaxation", t, 1000 * np.exp(-t / 10), "Maxwell")
     assert res["params"]["G_s"] == pytest.approx(1000, rel=1e-3)
     assert res["params"]["eta_s"] == pytest.approx(10000, rel=1e-3)
@@ -89,7 +82,7 @@ def _fit_full(test, t, y, models, **extra):
 
 
 def test_viscosidad_fuera_de_los_limites_de_pyrheo():
-    # auditoría: pyRheo acota eta_s al rango de 1/J (unidades de módulo); con eta_s = 6e5 quedaba en el límite
+    # eta_s fuera del rango al que pyRheo acota los parámetros
     t = np.logspace(0, 3, 120)
     p = {"G": 18.0, "eta_s": 6e5, "beta": 0.065}
     res = _fit("creep", t, engine.model_eval("creep", "FractionalMaxwellLiquid", p, t), "FractionalMaxwellLiquid")
@@ -190,7 +183,7 @@ def _tpu_like(rng):
 
 
 def test_equivalencia_practica_prefiere_el_modelo_simple():
-    # la critica del ingeniero: un creep con apariencia de sólido no debe describirse como líquido por una mejora de 0.3 %
+    # creep con apariencia de sólido: no se recomienda un líquido por una mejora de 0.3 %
     t, y = _tpu_like(np.random.default_rng(3))
     d = _fit_full("creep", t, y, ["SpringPot", "FractionalMaxwellLiquid", "Maxwell"], tolerancia="1")
     R = d["recomendacion"]
@@ -231,7 +224,7 @@ def test_ponderacion_invalida():
     assert r.status_code == 400
 
 
-# ------------------------------------------------------------------ teoría de los modelos
+# Teoría de los modelos
 def _interconversion(model, p, t):
     g = lambda u: engine.model_eval("relaxation", model, p, [u])[0]
     j = lambda u: engine.model_eval("creep", model, p, [u])[0]
@@ -266,9 +259,9 @@ def test_mittag_leffler_exacta():
         assert val == pytest.approx(ref, rel=1e-8)
 
 
-# ------------------------------------------------------------------ tensión (ASTM D638)
+# Tensión (ASTM D638)
 def test_tension_recta_sin_ruptura():
-    # antes reportaba "ruptura" en el último punto aunque la curva nunca cae
+    # curva sin caída: no se reporta ruptura
     e = np.linspace(0, 10, 100)
     r = _tensile(e, e / 100 * 1.0)  # módulo 1 MPa, deformación en %
     assert r.status_code == 200, r.text
@@ -281,7 +274,7 @@ def test_tension_recta_sin_ruptura():
 
 
 def test_tension_en_pa_y_fraccion():
-    # antes: "index 2499 is out of bounds for axis 0 with size 100"
+    # deformación en fracción y esfuerzo en Pa
     e = np.linspace(0, 0.10, 100)
     r = _tensile(e, e * 1e6, strain_unit="frac", stress_unit="Pa")
     assert r.status_code == 200, r.text

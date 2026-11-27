@@ -17,10 +17,10 @@ import hiperelastico
 from engine import IMPORT_ERROR, PYRHEO, available_models, fit_settings, predict_response, recommend, run_fit
 
 MAX_BYTES = 10 * 1024 * 1024
-MAX_POINTS = 150  # puntos que se mandan al ajuste (muestreo logarítmico); los ensayos largos traen decenas de miles
+MAX_POINTS = 150  # intervalos logarítmicos que se ajustan
 FRONT = Path(__file__).resolve().parent.parent / "frontend"
 
-# Columnas calculadas para el formato de los reómetros de FIME (esfuerzo en MPa, deformación en %)
+# Columnas calculadas en archivos FIME (esfuerzo en MPa, deformación en %)
 J_NAME = "D(t) = Deformación/Tensión [1/MPa]"
 G_NAME = "E(t) = Tensión/Deformación [MPa]"
 
@@ -31,9 +31,9 @@ def _norm(s):
     return unicodedata.normalize("NFKD", str(s)).encode("ascii", "ignore").decode().lower().strip()
 
 
-# ---------------------------------------------------------------- lectura
+# Lectura de archivos
 def read_raw(upload: UploadFile, raw: bytes, sheet: str = ""):
-    """Lee el archivo SIN encabezado. Devuelve (DataFrame crudo, hojas, hoja usada)."""
+    """Lee el archivo sin encabezado. Devuelve (tabla, hojas, hoja usada)."""
     if len(raw) > MAX_BYTES:
         raise HTTPException(413, "El archivo pesa más de 10 MB.")
     name = (upload.filename or "").lower()
@@ -74,11 +74,9 @@ def fime_meta(df: pd.DataFrame):
 
 
 def fime_samples(rdf: pd.DataFrame):
-    """Formato de los reómetros de FIME:
-       fila 1: M1, M2, ... (una etiqueta por muestra, cada una abre un bloque de columnas)
-       fila 2: nombres (Tiempo, Fuerza, Desplazamiento, Tension, Deformacion)
-       fila 3: unidades (seg, N, mm, N/mm2, %)  ·  fila 4 en adelante: datos.
-       Devuelve {etiqueta: DataFrame} o None si el archivo no tiene ese formato."""
+    """Separa las muestras de un archivo FIME.
+    Fila 1: M1, M2, ...; fila 2: nombres; fila 3: unidades; desde la fila 4: datos.
+    Devuelve {muestra: DataFrame} o None si el archivo no tiene ese formato."""
     if rdf.shape[0] < 4 or rdf.shape[1] < 2:
         return None
     r0 = [str(v).strip() if pd.notna(v) else "" for v in rdf.iloc[0]]
@@ -98,7 +96,7 @@ def fime_samples(rdf: pd.DataFrame):
         sub = sub.dropna(how="all").reset_index(drop=True)
         m = fime_meta(sub)
         if not (m["t"] and m["s"] and m["e"]):
-            return None  # no trae tiempo, esfuerzo y deformación: se trata como tabla normal
+            return None
         eps, sig = sub[m["e"]] / 100.0, sub[m["s"]]
         sub[J_NAME] = (eps / sig).where(sig > 0)
         sub[G_NAME] = (sig / eps).where(eps > 0)
@@ -117,10 +115,9 @@ def load_table(upload, raw, sheet="", sample=""):
     return {"df": generic_table(rdf), "sheets": sheets, "sheet": used, "samples": [], "sample": "", "fime": False, "all": None}
 
 
-# ---------------------------------------------------------------- detección del ensayo
+# Detección del ensayo
 def classify_fime(df: pd.DataFrame) -> str:
-    """creep: esfuerzo constante y la deformación crece · relajación: deformación constante y el
-       esfuerzo cae · tensión: ninguno de los dos se mantiene (ensayo a velocidad constante hasta romper)."""
+    """Clasifica la muestra como creep, relajación o tensión según la variable que se mantiene constante."""
     m = fime_meta(df)
     d = df[[m["s"], m["e"]]].dropna()
     h = len(d) // 2
@@ -134,7 +131,7 @@ def classify_fime(df: pd.DataFrame) -> str:
 
 
 def guess_columns(columns):
-    """Adivina ensayo y columnas por el nombre del encabezado (tablas que no son del reómetro FIME)."""
+    """Adivina el ensayo y las columnas por los encabezados."""
     low = [str(c).lower() for c in columns]
 
     def find(pattern):
@@ -169,16 +166,12 @@ def guess_fime(df):
     return {}
 
 
-# ---------------------------------------------------------------- preprocesado
+# Preprocesado
 def fime_segment(df, test):
-    """Corrección por la rampa de carga (superposición de Boltzmann).
-    El ensayo ideal aplica la carga de golpe; la máquina la aplica en una rampa de duración t_r. Para tiempos
-    posteriores a la rampa, medir el tiempo desde la MITAD de la rampa reproduce la respuesta a una carga
-    instantánea con error menor a 1 % (simulado con el modelo ajustado a los datos de FIME: con el origen al
-    final de la rampa el sesgo llegaba a 11 % en relajación y 4.5 % en creep).
-    La variable controlada define la rampa: deformación en relajación, esfuerzo en creep.
-    Inicio de la rampa: primer punto >= 2 % del valor sostenido; fin: primer punto >= 98 %.
-    Se conservan los datos desde el fin de la rampa. Devuelve (datos, info de la rampa)."""
+    """Corrige la rampa de carga.
+    La rampa va del 2 % al 98 % del valor sostenido de la variable controlada (deformación en relajación,
+    esfuerzo en creep). El tiempo se mide desde la mitad de la rampa y se conservan los datos desde su final.
+    Devuelve (datos, datos de la rampa)."""
     m = fime_meta(df)
     ctrl = m["e"] if test == "relaxation" else m["s"]
     d = df.dropna(subset=[m["t"], m["s"], m["e"]]).reset_index(drop=True)
@@ -194,7 +187,7 @@ def fime_segment(df, test):
 
 
 def thin(data, xcol, n=MAX_POINTS):
-    """Reduce a ~n puntos espaciados en escala logarítmica (data ya viene ordenada por xcol, x > 0)."""
+    """Reduce a ~n puntos espaciados logarítmicamente."""
     if len(data) <= n:
         return data
     x = data[xcol].to_numpy(float)
@@ -204,9 +197,8 @@ def thin(data, xcol, n=MAX_POINTS):
 
 
 def log_bin(data, xcol, ycols, n=MAX_POINTS):
-    """Promedia TODAS las observaciones en n intervalos de igual ancho en log10(x).
-    Devuelve (tabla de promedios, número de observaciones por intervalo). x se promedia geométricamente.
-    Con anchos de intervalo pequeños (~60 por década) el sesgo de promediar una curva suave es despreciable."""
+    """Promedia las observaciones en n intervalos de igual ancho en log10(x); x se promedia geométricamente.
+    Devuelve (promedios, observaciones por intervalo)."""
     if len(data) <= n:
         return data.reset_index(drop=True), np.ones(len(data))
     x = data[xcol].to_numpy(float)
@@ -229,20 +221,12 @@ def bin_uncertainty(data, xcol, ycols, n=MAX_POINTS):
 
 
 def _bin_uncertainty(data, xcol, ycols, n, MIN_OBS_SE):
-    """Error estándar RELATIVO del promedio de cada intervalo de log_bin (mismos intervalos), para pesos w = 1/SE_rel^2.
-    1. Dentro de cada intervalo con >= 10 observaciones se quita la tendencia de la curva (recta en ln x) antes de medir
-       la dispersión: en tiempos largos un intervalo abarca muchos segundos y la curva sube dentro de él; esa subida
-       no es ruido.
+    """Error estándar relativo del promedio de cada intervalo de log_bin.
+    1. Quita la tendencia lineal en ln x dentro de cada intervalo con al menos MIN_OBS_SE observaciones.
     2. sigma_rel = desviación estándar de los residuos (m - 2 grados de libertad) / promedio del intervalo.
-    3. El perfil de ruido se suaviza con la mediana de 5 intervalos vecinos (la resolución del equipo puede dar
-       dispersión cero) y se interpola en ln x a los intervalos con menos de 10 observaciones (con 3 o 4 la desviación
-       estándar tiene 1-2 grados de libertad y su mediana subestima el ruido a la mitad). Si ningún intervalo llega a
-       10 observaciones se usan los de 3 o más.
-    4. SE_rel = sigma_rel / sqrt(m_ef). Con adquisición rápida el equipo filtra la señal y el ruido de lecturas
-       consecutivas está correlacionado: m observaciones valen menos que m independientes. Se mide la autocorrelación
-       de lag 1 (rho) de los residuos dentro de los intervalos y se usa el número efectivo de un proceso AR(1),
-       m_ef = m (1 - rho)/(1 + rho) (mínimo 1).
-    Devuelve (array (intervalos, columnas) con SE_rel, array con sigma_rel por observación, lista de rho por columna)."""
+    3. Suaviza sigma_rel con la mediana de 5 intervalos e interpola en ln x a los intervalos sin estimación.
+    4. SE_rel = sigma_rel / sqrt(m_ef), con m_ef = m (1 - rho)/(1 + rho) y rho la autocorrelación de lag 1.
+    Devuelve (SE_rel por intervalo, sigma_rel por intervalo, rho por columna)."""
     x = data[xcol].to_numpy(float)
     edges = np.logspace(np.log10(x.min()), np.log10(x.max()), n + 1)
     b = np.clip(np.searchsorted(edges, x, side="right") - 1, 0, n - 1)
@@ -265,7 +249,7 @@ def _bin_uncertainty(data, xcol, ycols, n, MIN_OBS_SE):
                 slope = float(u @ (yy - yy.mean()) / (u @ u)) if u @ u > 0 else 0.0
                 r = yy - yy.mean() - slope * u
                 sig[i] = float(np.sqrt(r @ r / (m - 2))) / abs(yy.mean())
-                if m >= 10:   # autocorrelación de lag 1 dentro del intervalo (datos en orden de tiempo)
+                if m >= 10:  # autocorrelación de lag 1
                     num += float(r[:-1] @ r[1:])
                     den += float(r @ r)
         ok = np.isfinite(sig)
@@ -273,10 +257,10 @@ def _bin_uncertainty(data, xcol, ycols, n, MIN_OBS_SE):
             raise ValueError("no hay intervalos con suficientes observaciones para estimar la incertidumbre")
         sm = sig.copy()
         idx = np.flatnonzero(ok)
-        for j, i in enumerate(idx):   # mediana móvil sobre los intervalos con estimación
+        for j, i in enumerate(idx):  # mediana de 5 intervalos
             sm[i] = float(np.median(sig[idx[max(0, j - 2):j + 3]]))
         sm = np.interp(cen, cen[ok], sm[ok])
-        floor = max(1e-6, 0.01 * float(np.median(sm[ok])))   # la resolución del equipo puede dar dispersión ~0
+        floor = max(1e-6, 0.01 * float(np.median(sm[ok])))  # piso para dispersión casi cero
         sm = np.maximum(sm, floor)
         rho = float(np.clip(num / den, 0.0, 0.99)) if den > 0 else 0.0
         m_ef = np.maximum(cnt * (1 - rho) / (1 + rho), 1.0)
@@ -299,7 +283,7 @@ MAIN_FAMILY = ("SpringPot", "FractionalMaxwellGel", "FractionalKelvinVoigtS", "F
 
 
 def _bin_and_fit(test, data, x_col, ycols, weighting, models):
-    """Promedia por intervalos, calcula los pesos y ajusta. Devuelve un dict con todo lo necesario para la respuesta."""
+    """Promedia por intervalos, calcula los pesos y ajusta los modelos."""
     n_raw = len(data)
     x_all = data[x_col].to_numpy(float)
     ys_all = [data[c].to_numpy(float) for c in ycols]
@@ -334,30 +318,23 @@ def _bin_and_fit(test, data, x_col, ycols, weighting, models):
         n_fit = len(np.concatenate(ys))
         for r in results:
             if "error" not in r:
-                # chi^2 reducido = sum ((y - yhat)/y / SE_rel)^2 / (n - k): ~1 si el modelo reproduce los datos dentro del ruido
+                # chi^2 reducido
                 r["chi2_red"] = float(r["rss_w"] * scale / max(n_fit - len(r["params"]), 1))
     return {"n_raw": n_raw, "x_all": x_all, "ys_all": ys_all, "x": x, "ys": ys, "counts": counts, "results": results,
             "ponderacion": pond}
 
 
 def _param_table(r):
-    """Parámetros con IC para comparar dos ajustes: notación del doctor si existe, si no los de pyRheo."""
+    """Parámetros con IC de un ajuste: notación del doctor si existe; si no, los de pyRheo."""
     if r.get("doctor"):
         return {**r["doctor"]["parametros"], **(r["doctor"].get("derivados") or {})}
     return r.get("incertidumbre") or {}
 
 
 def ramp_sensitivity(test, data, x_col, ycols, weighting, ramp, results, recommendation):
-    """Prueba de sensibilidad a la rampa (Flory y McKenna; 'A note on ... ramp tests', 2000): la respuesta a la rampa y
-    al escalón coinciden aproximadamente después de ~10 veces la duración de la rampa t1. Se repite el ajuste con los
-    datos desde 10 t1 y se compara cada parámetro con el del ajuste principal.
-    Criterio: la diferencia es significativa si |delta| > 1.96 sqrt(SE_principal^2 + SE_10t1^2) (módulos y tiempos en
-    escala logarítmica). Es conservador: trata los dos ajustes como independientes aunque comparten datos. La prueba de
-    Hausman para estimadores anidados (varianza SE_10t1^2 - SE_principal^2) no aplica porque al recortar los datos se
-    vuelven a promediar en otros intervalos con otros pesos; con datos sintéticos exactos daba falsas alarmas en alpha.
-    Con el criterio conservador no hubo falsas alarmas y un artefacto de 1 % en los primeros segundos se detecta con
-    z ~ 4.5. Comparar solo con el IC del ajuste principal (lo que proponía el plan) rechazaría por azar aun sin sesgo,
-    porque el segundo ajuste tiene más ruido; ese dato se reporta como informativo («dentro del IC principal»)."""
+    """Repite el ajuste con los datos desde 10·t1 y compara cada parámetro con el ajuste principal.
+    La diferencia es significativa si |delta| > 1.96 sqrt(SE_principal^2 + SE_10t1^2); módulos y tiempos en
+    escala logarítmica."""
     t1 = float(ramp["duracion_s"])
     t_cut = 10 * t1
     sub = data[data[x_col] >= t_cut]
@@ -392,15 +369,15 @@ def ramp_sensitivity(test, data, x_col, ycols, weighting, ramp, results, recomme
             if ua.get("determinado") and ub.get("determinado") and sea and seb and ua["valor"] > 0 and ub["valor"] > 0:
                 if k in ("alpha", "beta", "kappa"):
                     delta, va, vb = ub["valor"] - ua["valor"], sea, seb
-                else:   # escala logarítmica: SE relativo
+                else:  # módulos y tiempos: escala logarítmica
                     delta, va, vb = np.log(ub["valor"] / ua["valor"]), sea / ua["valor"], seb / ub["valor"]
-                sd = float(np.sqrt(va ** 2 + vb ** 2))   # conservador: trata los dos ajustes como independientes
+                sd = float(np.sqrt(va ** 2 + vb ** 2))
                 row["z"] = float(abs(delta) / sd)
                 row["consistente"] = bool(row["z"] <= 1.96)
                 consistent &= row["consistente"]
                 comparable += 1
             else:
-                row["consistente"] = None     # no determinado en alguno de los dos ajustes: no se compara
+                row["consistente"] = None  # no determinado en algún ajuste
             comp[k] = row
         if comparable == 0:
             concl = "Ningún parámetro está determinado en ambos ajustes: la prueba no aplica."
@@ -422,11 +399,10 @@ def ramp_sensitivity(test, data, x_col, ycols, weighting, ramp, results, recomme
     return info
 
 
-# ---------------------------------------------------------------- endpoints
+# Endpoints
 @app.get("/api/status")
 def status():
-    # «Recomendado» prueba todos los modelos salvo el automático de pyRheo y el Zener fraccionario de 6 parámetros en
-    # creep (su creep requiere inversión numérica de Laplace y suele exceder el límite de tiempo)
+    # Modelos de «Recomendado»: todos menos "auto" y FractionalZener en creep
     rec = {t: [m for m in available_models(t) if m != "auto" and not (t == "creep" and m == "FractionalZener")]
            for t in ("creep", "relaxation", "saos", "steady")}
     return {"pyrheo": PYRHEO, "import_error": IMPORT_ERROR, "models": {t: available_models(t) for t in ("creep", "relaxation", "saos", "steady")},
@@ -471,9 +447,9 @@ def fit(file: UploadFile = File(...), test: str = Form(...), x_col: str = Form(.
         data = df[cols].apply(pd.to_numeric, errors="coerce").dropna()
     except KeyError:
         raise HTTPException(400, "Alguna columna elegida no existe en el archivo.")
-    data = data[(data > 0).all(axis=1)].sort_values(x_col)  # el ajuste ponderado y los ejes log requieren valores > 0
+    data = data[(data > 0).all(axis=1)].sort_values(x_col)  # solo valores positivos
     if not tb["fime"] and test == "relaxation" and trim == "1" and len(data):
-        data = data.iloc[int(np.argmax(data[y_col].to_numpy())):].copy()  # desde el pico, quita la rampa de carga
+        data = data.iloc[int(np.argmax(data[y_col].to_numpy())):].copy()  # desde el pico de esfuerzo
         data[x_col] = data[x_col] - data[x_col].iloc[0]
         data = data[data[x_col] > 0]
     if len(data) < 5:
@@ -516,13 +492,11 @@ def fit(file: UploadFile = File(...), test: str = Form(...), x_col: str = Form(.
                          "E(t) = Tensión/Deformación, módulo de relajación en tensión, en MPa. ") +
                         "pyRheo llama G a sus parámetros de módulo; aquí son módulos de tensión. " +
                         reduction + weight_txt)
-        # la deformación de los archivos FIME viene del desplazamiento del cabezal, no de un extensómetro
         resp["aviso_deformacion"] = ("Deformación nominal: calculada con el desplazamiento del cabezal (separación de mordazas), "
                                      "no con extensómetro. D(t) y E(t) son APARENTES: incluyen la deformación en las mordazas "
                                      "y cualquier deslizamiento. ISO 899-1 exige extensómetro para datos de diseño y acepta la "
                                      "separación de mordazas para investigación o control de calidad. Repórtalo como limitación.")
     else:
-        # archivos genéricos: no se suponen unidades; los ejes llevan el nombre de las columnas
         resp["axes"] = [x_col, f"{y_col} / {y2_col}" if test == "saos" else y_col]
         resp["note"] = reduction + weight_txt
     return resp
@@ -532,9 +506,7 @@ def fit(file: UploadFile = File(...), test: str = Form(...), x_col: str = Form(.
 def tensile(file: UploadFile = File(...), sheet: str = Form(""), x_col: str = Form(""), y_col: str = Form(""),
                   secant: float = Form(1.0), strain_unit: str = Form("pct"), stress_unit: str = Form("MPa"),
                   hyper_max: str = Form("")):
-    """Ensayo de tensión analizado según ASTM D638-14 (ver tensile.py). No usa pyRheo.
-    Internamente todo se calcula con deformación en % y esfuerzo en MPa; los archivos FIME ya vienen así y en
-    archivos genéricos se convierten según las unidades que indique el usuario."""
+    """Analiza un ensayo de tensión según ASTM D638-14, con deformación en % y esfuerzo en MPa."""
     if not (0 < secant <= 100):
         raise HTTPException(400, "La deformación designada para el módulo secante debe estar entre 0 y 100 %.")
     try:
@@ -571,7 +543,7 @@ def tensile(file: UploadFile = File(...), sheet: str = Form(""), x_col: str = Fo
         except Exception as e:
             errors.append({"sample": label, "error": str(e)})
             continue
-        # claves cortas usadas por la gráfica, el CSV y el código Python
+        # claves cortas para la gráfica, el CSV y el código Python
         r.update(sample=label, strain=r["deformacion"], stress=r["esfuerzo"], E=r["modulo"]["valor"],
                  sigma_max=r["resistencia_tension"], eps_break=r["ruptura"]["deformacion"])
         out.append(r)
@@ -596,15 +568,15 @@ def tensile(file: UploadFile = File(...), sheet: str = Form(""), x_col: str = Fo
 class PredictIn(BaseModel):
     model: str
     params: Dict[str, float]
-    target: str            # "saos" | "relaxation" | "creep"
-    x_min: float           # 10^x_min ... 10^x_max (rad/s para saos, s para las otras)
+    target: str  # "saos", "relaxation" o "creep"
+    x_min: float  # x de 10^x_min a 10^x_max
     x_max: float
     n: int = 200
 
 
 @app.post("/api/predict")
 def predict(q: PredictIn):
-    """Usa los parámetros de un modelo ya ajustado para calcular otra respuesta (p. ej. G′, G″ a partir de creep)."""
+    """Evalúa un modelo ajustado en otra respuesta."""
     if q.target not in ("saos", "relaxation", "creep"):
         raise HTTPException(400, "Respuesta no válida.")
     if not (-12 <= q.x_min < q.x_max <= 12) or not (10 <= q.n <= 1000):

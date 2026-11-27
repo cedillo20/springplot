@@ -1,8 +1,5 @@
-"""Pruebas de la familia de un solo orden en notación del doctor (FMM, KVF, ZFM y Springpot), creep y relajación.
-
-Corresponden a la Sección 7 del plan «SpringPlot: ajuste correcto de FMM, KVF y ZFM en creep y relajación de TPU
-impreso». Correr desde la carpeta backend:  python -m pytest tests -v
-La prueba de cobertura usa 40 réplicas; con SPRINGPLOT_SLOW=1 usa 200 (la del plan).
+"""Pruebas de Springpot, FMM, KVF y ZFM en notación del doctor, en creep y relajación.
+La prueba de cobertura usa 40 réplicas; con SPRINGPLOT_SLOW=1 usa 200.
 """
 import json
 import os
@@ -43,7 +40,7 @@ def _eval(test, model, d, t):
     return engine.model_eval(test, model, md.to_native(test, model, d), np.asarray(t, float))
 
 
-# parámetros "típicos de TPU" con su tiempo característico dentro de la ventana (si no, por diseño, no se determina)
+# parámetros con el tiempo característico dentro de la ventana
 CASES = [
     ("creep", "FractionalMaxwellGel", {"E": 20.0, "tau": 10.0, "alpha": 0.35}),
     ("relaxation", "FractionalMaxwellGel", {"E": 20.0, "tau": 10.0, "alpha": 0.35}),
@@ -54,7 +51,7 @@ CASES = [
 ]
 
 
-# ------------------------------------------------------------------ recuperación de parámetros conocidos
+# Recuperación de parámetros conocidos
 @pytest.mark.parametrize("test,model,d", CASES)
 def test_recupera_parametros_del_doctor_con_ruido_de_1pct(test, model, d):
     rng = np.random.default_rng(7)
@@ -62,8 +59,7 @@ def test_recupera_parametros_del_doctor_con_ruido_de_1pct(test, model, d):
     res = _fit_api(test, T, y, [model])["results"][0]
     assert "error" not in res, res
     P = res["doctor"]["parametros"]
-    # criterio del plan: error < 2 % en módulos y alpha. En el ZFM (4 parámetros) el error estándar de alpha con 1 % de
-    # ruido y 120 puntos es ~2.7 %, así que 2 % no es alcanzable siempre: se usa 3 % (el valor verdadero sigue en el IC)
+    # tolerancia: 2 % con 3 parámetros, 3 % con 4
     tol = 0.02 if len(d) == 3 else 0.03
     for k, v in d.items():
         u = P[k]
@@ -74,18 +70,16 @@ def test_recupera_parametros_del_doctor_con_ruido_de_1pct(test, model, d):
     assert res["arranques"] is None or res["arranques"]["coinciden"]
 
 
-# ------------------------------------------------------------------ teoría
+# Teoría
 @pytest.mark.parametrize("test,model,d,classic,t", [
     ("relaxation", "FractionalMaxwellGel", {"E": 20.0, "tau": 10.0}, lambda t, E, tau: E * np.exp(-t / tau), np.logspace(0, np.log10(20), 20)),
     ("creep", "FractionalMaxwellGel", {"E": 20.0, "tau": 10.0}, lambda t, E, tau: (1 + t / tau) / E, np.logspace(0, np.log10(20), 20)),
     ("creep", "FractionalKelvinVoigtS", {"E": 20.0, "tau": 10.0}, lambda t, E, tau: (1 - np.exp(-t / tau)) / E, np.logspace(0, np.log10(20), 20)),
-    # en relajación del KVF el término t^-alpha/Gamma(1-alpha) (~1e-3 (tau/t)) solo desaparece para t >> tau
+    # en relajación del KVF solo para t >> tau
     ("relaxation", "FractionalKelvinVoigtS", {"E": 20.0, "tau": 10.0}, lambda t, E, tau: E + 0 * t, np.logspace(2, 3, 20)),
 ])
 def test_limite_alpha_1_da_los_modelos_clasicos(test, model, d, classic, t):
-    # Se compara en 0.1-2 tau, donde la respuesta es apreciable, con el error referido a la escala de la respuesta
-    # (1/E o E). Con alpha = 0.999 la Mittag-Leffler conserva una cola de ley de potencia de orden 1e-3 que la
-    # exponencial no tiene: lejos de tau la comparación relativa no tiene sentido (0.999 no es exactamente 1).
+    # se compara en 0.1-2 tau, con el error referido a 1/E o E
     y = _eval(test, model, {**d, "alpha": 0.999}, t)
     ref = classic(t, d["E"], d["tau"])
     scale = 1 / d["E"] if test == "creep" else d["E"]
@@ -150,7 +144,7 @@ def test_tiempos_del_zfm_cumplen_tau_e_alpha_igual_tau_s_alpha_eu_sobre_er():
     assert der["tau_epsilon"] ** 0.4 == pytest.approx(5.0 ** 0.4 * 30 / 10, rel=1e-12)
 
 
-# ------------------------------------------------------------------ estadísticos
+# Estadísticos
 def test_estadisticos_del_doctor_coinciden_con_el_calculo_directo():
     rng = np.random.default_rng(11)
     d = {"E": 20.0, "tau": 10.0, "alpha": 0.35}
@@ -197,10 +191,9 @@ def test_kvf_degenerado_se_reporta_como_springpot():
     assert any("se reduce a un Springpot" in a for a in res["avisos"])
 
 
-# ------------------------------------------------------------------ cobertura de los intervalos
+# Cobertura de los intervalos
 def test_cobertura_del_ic95():
-    """El IC 95 % debe contener el valor verdadero en ~95 % de réplicas con ruido distinto (plan: 90-99 % en 200).
-    Se usa el núcleo del ajuste (proyección de variables + IC en notación del doctor) para que sea rápido."""
+    """El IC 95 % contiene el valor verdadero en ~95 % de las réplicas."""
     reps = 200 if os.environ.get("SPRINGPLOT_SLOW") else 40
     d = {"E": 20.0, "tau": 10.0, "alpha": 0.35}
     t = np.logspace(-1, 3, 60)

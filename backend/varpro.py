@@ -1,22 +1,11 @@
-"""Ajuste por proyección de variables (variable projection).
+"""Ajuste por proyección de variables.
 
-En casi todos los modelos, la respuesta es LINEAL en los coeficientes con dimensiones (módulos, viscosidades,
-cuasi-propiedades de los springpots) una vez fijados los órdenes fraccionarios y, si hace falta, un tiempo
-característico:
+Con los órdenes fraccionarios y el tiempo característico fijos, el modelo es lineal en sus coeficientes:
 
-    y(x) = sum_j c_j * phi_j(x; theta)        con c_j >= 0
+    y(x) = sum_j c_j * phi_j(x; theta),   c_j >= 0
 
-Para cada theta, los c_j óptimos se obtienen EXACTAMENTE con mínimos cuadrados no negativos (NNLS) sobre el
-residuo relativo ponderado; el optimizador solo busca en theta (órdenes en (0, 1) y log10 del tiempo).
-
-Por qué: pyRheo acota todos los parámetros con dimensiones al rango (min(y)/100, max(y)*100) de la respuesta
-(o de 1/J en creep). Ese rango tiene unidades de módulo, pero las viscosidades (MPa·s) y las cuasi-propiedades
-(MPa·s^alpha) no; con datos FIME la viscosidad de Maxwell fraccionario líquido en creep quedaba pegada al límite
-(eta_s = 1644, error RMS de 312 %) cuando el valor correcto es ~6e5 MPa·s (error 0.079 %).
-
-La pérdida es la de pyRheo: sum w_i ((y_i - yhat_i) / y_i)^2.
-Las funciones de Mittag-Leffler se evalúan aquí con la Padé 6/3 (rápida); engine.py verifica después la curva
-con el método exacto de Garrappa y repule si difieren.
+Los c_j se calculan con mínimos cuadrados no negativos (NNLS) sobre el residuo relativo ponderado y
+Nelder-Mead busca solo theta. Pérdida: sum w_i ((y_i - yhat_i) / y_i)^2. La Mittag-Leffler se evalúa con la Padé 6/3.
 """
 import itertools
 
@@ -26,7 +15,7 @@ from scipy.special import gamma
 
 try:
     from pyRheo.mittag_leffler.ml_pade63 import R_alpha_beta_6_3 as _ML
-except Exception:  # noqa
+except Exception:
     _ML = None
 
 
@@ -40,12 +29,11 @@ def _cplx(v):
     return np.concatenate([np.real(v), np.imag(v)])
 
 
-# Cada modelo: lista de parámetros no lineales y función (x, th) -> (matriz A, función c -> parámetros pyRheo)
-# Tipos de parámetro no lineal: "frac" en (0, 1); "frac<alpha" en (0, alpha); "logt" = log10 de un tiempo;
-# "pos2" en (0, 2); "pos5" en (0.05, 5).
+# Cada modelo: (parámetros no lineales, función (x, th) -> (matriz A, función c -> parámetros de pyRheo)).
+# Tipos: "frac" en (0, 1); "frac<alpha" en (0, alpha); "logt" = log10 de un tiempo; "pos2" en (0, 2); "pos5" en (0.05, 5).
 def _specs():
     S = {}
-    # ---------------- creep: J(t)
+    # creep: J(t)
     S["creep:Maxwell"] = ([], lambda t, p: (np.column_stack([np.ones_like(t), t]),
                                            lambda c: {"G_s": 1 / c[0], "eta_s": 1 / c[1]}))
     S["creep:SpringPot"] = (["alpha:frac"], lambda t, p: (np.column_stack([t ** p["alpha"] / gamma(1 + p["alpha"])]),
@@ -98,7 +86,7 @@ def _specs():
         return np.column_stack([np.ones_like(t), 1 - _ml(-(t / tau_r) ** a, a, 1)]), to_params
     S["creep:FractionalZenerSolidS"] = (["alpha:frac", "logt:logt"], cfzss)
 
-    # ---------------- relajación: G(t)
+    # relajación: G(t)
     S["relaxation:Maxwell"] = (["logt:logt"], lambda t, p: (
         np.column_stack([np.exp(-t / 10 ** p["logt"])]),
         lambda c: {"G_s": c[0], "eta_s": c[0] * 10 ** p["logt"]}))
@@ -137,7 +125,7 @@ def _specs():
         return np.column_stack([col]), lambda c: {"G": c[0] * tau ** b, "eta_s": c[0] * tau, "beta": b}
     S["relaxation:FractionalMaxwellLiquid"] = (["beta:frac", "logt:logt"], rfml)
 
-    # ---------------- SAOS: G*(w) = sum c_j phi_j(i w)
+    # SAOS: G*(w) = sum c_j phi_j(i w)
     S["saos:Maxwell"] = (["logt:logt"], lambda w, p: (
         np.column_stack([_cplx(1j * w * 10 ** p["logt"] / (1 + 1j * w * 10 ** p["logt"]))]),
         lambda c: {"G_s": c[0], "eta_s": c[0] * 10 ** p["logt"]}))
@@ -167,7 +155,7 @@ def _specs():
                 lambda c: {"G": c[0] * tau ** b, "eta_s": c[0] * tau, "beta": b})
     S["saos:FractionalMaxwellLiquid"] = (["beta:frac", "logt:logt"], sfml)
 
-    # ---------------- flujo estacionario: eta(gamma_dot)
+    # flujo estacionario: eta(gamma_dot)
     S["steady:PowerLaw"] = (["n:pos2"], lambda g, p: (np.column_stack([g ** (p["n"] - 1)]), lambda c: {"k": c[0], "n": p["n"]}))
     S["steady:HerschelBulkley"] = (["n:pos2"], lambda g, p: (
         np.column_stack([1 / g, g ** (p["n"] - 1)]), lambda c: {"sigma_y": c[0], "k": c[1], "n": p["n"]}))
@@ -230,7 +218,7 @@ def _encode_start(kind, value, logt_range):
 
 
 def fit(test, model, x, y, w=None):
-    """Devuelve (parámetros pyRheo, pérdida) o None si el modelo no admite proyección de variables."""
+    """Devuelve (parámetros de pyRheo, pérdida, arranques) o None si el modelo no está en SPECS."""
     key = f"{test}:{model}"
     if not supported(test, model):
         return None
@@ -240,8 +228,7 @@ def fit(test, model, x, y, w=None):
     y = np.asarray(y, float)
     w = np.ones_like(y) if w is None else np.asarray(w, float)
     sw = np.sqrt(w)
-    # rango del tiempo característico: 6 décadas más allá de los datos (en SAOS y flujo, tiempo ~ 1/x). En los modelos
-    # con dos órdenes, tau = (V/G)^(1/(alpha-beta)) puede quedar muy lejos de la ventana medida cuando alpha ~ beta.
+    # rango de log10(tau): 6 décadas más allá de los datos (en SAOS y flujo, tau ~ 1/x)
     lx = np.log10(x)
     logt_range = ((-lx.max() - 6, -lx.min() + 6) if test in ("saos", "steady") else (lx.min() - 6, lx.max() + 6))
 
@@ -253,7 +240,7 @@ def fit(test, model, x, y, w=None):
             if not np.all(np.isfinite(Aw)):
                 return np.inf, None, None
             c, _ = nnls(Aw, sw)
-        except Exception:  # noqa
+        except Exception:
             return np.inf, None, None
         c = np.maximum(c, 1e-14 * max(c.max(), 1e-300))   # coeficiente nulo -> parámetro muy grande pero finito
         r = (y - A @ c) / y
@@ -264,7 +251,7 @@ def fit(test, model, x, y, w=None):
         loss, c, to_params = solve(np.array([]))
         return (to_params(c), loss, []) if c is not None else None
 
-    # arranques deterministas en una rejilla; se refinan los 3 mejores con Nelder-Mead
+    # rejilla de arranques; se refinan los 3 mejores con Nelder-Mead
     grids = []
     for name, kind in kinds:
         if kind in ("frac", "frac<alpha"):
@@ -278,11 +265,11 @@ def fit(test, model, x, y, w=None):
     starts = [np.array([_encode_start(k, v, logt_range) for k, v in combo]) for combo in itertools.product(*grids)]
     scored = sorted(((solve(u)[0], i) for i, u in enumerate(starts)), key=lambda z: z[0])
     best = None
-    finals = []   # a dónde llega cada uno de los 3 arranques (evidencia de mínimo global)
+    finals = []  # resultado de cada uno de los 3 arranques
     opts = {"maxfev": 400 * len(kinds), "xatol": 1e-9, "fatol": 1e-16}
     for _, i in scored[:3]:
         r = minimize(lambda u: solve(u)[0], starts[i], method="Nelder-Mead", options=opts)
-        # Nelder-Mead puede detenerse en un simplex degenerado: se reinicia desde su mejor punto hasta que deja de mejorar
+        # se reinicia Nelder-Mead hasta que deja de mejorar
         for _ in range(4):
             r2 = minimize(lambda u: solve(u)[0], r.x, method="Nelder-Mead", options=opts)
             if r2.fun >= r.fun * (1 - 1e-9):
